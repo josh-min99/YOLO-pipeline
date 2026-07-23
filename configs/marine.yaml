@@ -1,0 +1,10 @@
+# YOLO data config -- warship-first (어선/상선/군함). person/bird excluded for now.
+# path is the dataset root produced by scripts/json_to_yolo.py (set on the training host).
+path: ../datasets/marine
+train: images/train
+val: images/val
+
+names:
+  0: fishing_boat   # 어선 (normal)
+  1: merchant_ship  # 상선 (normal)
+  2: warship        # 군함 (ANOMALY / target)
