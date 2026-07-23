@@ -3,29 +3,31 @@
 > 전제: RTX 3090 인스턴스, tmux 안에서 실행(§5-4 SSH 끊김 대비). 끝나면 인스턴스 Destroy(§5-5).
 > 함정 노트는 상위 `스모크테스트_유의사항.md` 참고.
 
-## 0. 인스턴스 준비물 2개
-- **AI Hub 원본 zip** (Google Drive): 이미지 `TS_*.zip` 포함.
-- **labels_train.tgz**: stem별 라벨 JSON 41,972개 (로컬 `../data/labels_train`을 tar). Drive에 함께 올리거나 scp.
+## 0. 인스턴스 준비물
+- **AI Hub 원본 zip** (Google Drive, 이미지 `TS_*.zip` 포함) 만 받으면 됨.
+- 라벨(`labels_train.tgz`, 41,972 JSON)은 **repo에 포함**되어 clone하면 딸려옴.
 
 ## 1. 셋업
 ```bash
 cd /workspace
 git clone https://github.com/josh-min99/YOLO-pipeline.git
 cd YOLO-pipeline
-pip install ultralytics gdown
+pip install -U ultralytics gdown
+python -c "import torch; print('cuda:', torch.cuda.is_available())"   # True 확인
 ```
 
 ## 2. 데이터 내려받기 & 풀기
 ```bash
-# (a) 라벨
-gdown <labels_train.tgz FILE_ID> -O labels_train.tgz
+# (a) 라벨 — repo에 있음. 풀기만.
 mkdir -p labels_train && tar -xzf labels_train.tgz -C labels_train --strip-components=1
+ls labels_train | wc -l          # 41972 확인
 
 # (b) 이미지 zip 번들 (AI Hub 원본)
 gdown 1gF4Bjgd7MORlyxnXtPl6SC1Lzl-3yNKS -O aihub.zip
 mkdir -p aihub && unzip -q aihub.zip -d aihub
-#  -> aihub 안에서 TS_*.zip 위치 확인:  find aihub -name 'TS_*.zip'
-#     (개방데이터에 Validation 폴더가 함께 있으면 그 TS_도 포함해 추출 가능)
+find aihub -name 'TS_*.zip'
+#   막히면: gdown --fuzzy "https://drive.google.com/uc?id=1gF4Bjgd7MORlyxnXtPl6SC1Lzl-3yNKS" -O aihub.zip
+#   (개방데이터에 Validation 폴더가 함께 있으면 그 TS_도 포함해 추출 가능)
 ```
 
 ## 3. 이미지 추출 (flat stem.jpg) + YOLO 데이터셋 빌드
