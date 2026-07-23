@@ -84,9 +84,12 @@ def main():
                     n_miss += 1
                     continue
                 dst = img_out / f"{stem}{args.img_ext}"
-                if not dst.exists():
+                if dst.is_symlink() and not dst.exists():
+                    dst.unlink()                       # 이전 실행이 남긴 깨진 링크 제거
+                if not (dst.exists() or dst.is_symlink()):
                     if args.link:
-                        try: dst.symlink_to(ip)
+                        # 절대경로로 링크(상대링크는 심링크 위치 기준이라 깨짐)
+                        try: dst.symlink_to(ip.resolve())
                         except (OSError, NotImplementedError): shutil.copy2(ip, dst)
                     else:
                         shutil.copy2(ip, dst)
