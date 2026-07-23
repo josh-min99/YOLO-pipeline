@@ -1,0 +1,27 @@
+# datasets / images (large, keep out of git)
+datasets/
+data/
+images/
+*.jpg
+*.jpeg
+*.png
+*.tgz
+*.tar
+*.zip
+
+# training outputs / weights
+runs/
+weights/
+*.pt
+*.pth
+*.onnx
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# misc
+.DS_Store
+*.log
