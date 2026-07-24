@@ -67,6 +67,35 @@ yolo detect predict model=runs/detect/marine_*/weights/best.pt \
 - `results.csv`, PR/컨퓨전 이미지도 회수.
 - 인스턴스 **Destroy** (과금 정지).
 
+## 7. 🔴 재검증 (W5) — 첫 결과(mAP 0.98)는 leakage로 부풀려짐
+
+> audit 결론: clip 분할은 깨끗하나 **같은 (날짜,지점) 세션이 train/val 양쪽**(val 군함세션 83% 겹침).
+> 증거: mAP50이 **epoch 1에 이미 0.977**(1에폭에 val 해결 = 외운 걸 재인식). 정직한 일반화 숫자를 다시 내야 함.
+
+### 7-1. 세션 단위 재분할 후 재학습
+```bash
+# (로컬에서 이미 생성됨: splits_session/, splits_session_spot/ — repo에 포함)
+# 세션 분할로 YOLO 데이터셋 다시 빌드 (이미지는 이미 datasets/marine_frames에 있음)
+python scripts/json_to_yolo.py --labels-dir labels_train --images-dir datasets/marine_frames \
+    --splits-dir splits_session --out datasets/marine_session --link
+sed -i "s#^path:.*#path: $(pwd)/datasets/marine_session#" configs/marine.yaml   # 또는 새 yaml
+bash scripts/train.sh yolo11s.pt 1280 100 16
+#  → 이번엔 mAP50이 epoch1에 천장 치는지 확인. 낮게/천천히 오르면 leakage 제거된 것.
+#  더 엄격히 '새 지점' 보려면 splits_session_spot (spot 9,10,12 홀드아웃) 사용.
+```
+
+### 7-2. 군함 오탐율(가짜 경보) 측정 — 배포 핵심 지표
+```bash
+python scripts/eval_warship_fp.py --best runs/detect/runs/*/weights/best.pt \
+    --data-root datasets/marine_session --conf-list 0.25,0.4,0.6 --split val
+#  → 군함 없는 프레임에서 conf별 '가짜 군함 경보' 프레임비율. 운영 임계값(F1최적≈0.6) 기준으로 보고.
+```
+
+### 7-3. 운영점 보고 (mAP 단일 숫자 대신)
+- `yolo val ... conf=0.6` 등 임계값별 P/R. F1최적 conf는 첫 run 기준 **0.604**(0.25 아님).
+- BoxPR_curve.png: 군함은 recall ~0.95까지 precision ~0.95 유지, **recall>0.97에서 precision 절벽**.
+- 위협탐지는 "recall 0.98일 때 precision", "가짜경보율"을 threshold별 표로 보고할 것.
+
 ## 다음(예정)
 - frame-level AUC로 재구성 VAD(60%)와 같은 축에서 비교(프레임 점수 = 군함 conf max).
 - 실시간 데모용 FPS 측정(yolo11n vs s, imgsz 스윕). W1처럼 batch=1 + sync.
