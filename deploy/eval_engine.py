@@ -97,9 +97,12 @@ def main():
                 r["op_R_warship"] = round(float(m2.box.r[idx]), 4)
 
             # (3) 빈 프레임 오경보율
+            # 🔴 TRT 엔진은 batch=1 고정으로 빌드되므로 predict에 리스트를 묶어 넣으면
+            #    AssertionError(input size [8,3,H,W] != max model size [1,3,H,W]). 엔진이면 1로.
+            pb = 1 if str(w).endswith(".engine") else args.batch
             t0 = time.time()
             fp_frames, fp_boxes = count_false_alarms(model, negs, args.op_conf,
-                                                     args.warship_class, imgsz, args.batch)
+                                                     args.warship_class, imgsz, pb)
             r["fp_rate"] = round(fp_frames / max(1, len(negs)), 4)
             r["fp_frames"] = fp_frames
             r["fp_boxes"] = fp_boxes
@@ -107,8 +110,11 @@ def main():
                   f"운영점 P{r.get('op_P_warship')} R{r.get('op_R_warship')} / "
                   f"오경보 {r['fp_rate']:.2%} ({time.time()-t0:.0f}s)")
         except Exception as e:
+            # 부분 결과는 살린다 — mAP까지 재놓고 오탐 단계에서 죽으면 다시 30분 걸린다
             print(f"[fail] {type(e).__name__}: {e}")
             r["error"] = f"{type(e).__name__}: {e}"
+            if "warship_map50" in r:
+                print(f"  (부분 결과 보존) 군함 mAP50 {r['warship_map50']} / 전체 {r.get('map50')}")
         rows.append(r)
 
     if not rows:
@@ -126,7 +132,7 @@ def main():
     base = rows[0]
     print(f"\n{'엔진':<34}{'군함mAP50':>10}{'Δ':>8}{'전체':>8}{'R@0.6':>8}{'오경보':>9}")
     for r in rows:
-        if "error" in r:
+        if "error" in r and "warship_map50" not in r:
             print(f"{r['weights']:<34}  {r['error']}")
             continue
         d = r.get("warship_map50", 0) - base.get("warship_map50", 0)
