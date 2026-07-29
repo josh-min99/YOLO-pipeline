@@ -44,8 +44,9 @@ class Detector:
         from ultralytics import YOLO
         self.model = YOLO(weights)
         self.imgsz, self.conf, self.track = imgsz, conf, track
-        self.kw = dict(imgsz=imgsz, conf=conf, device=device, half=half,
-                       verbose=False, classes=classes)
+        self.kw = dict(imgsz=imgsz, conf=conf, device=device, verbose=False, classes=classes)
+        if half:      # ultralytics 8.4에서 half는 deprecated — 필요할 때만 전달
+            self.kw["half"] = True
         self.names = self.model.names
 
     def infer(self, frame):

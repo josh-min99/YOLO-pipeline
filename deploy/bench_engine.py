@@ -61,7 +61,10 @@ def bench(weights, imgsz, frames, conf, device, warmup, n, half):
     from ultralytics import YOLO
 
     model = YOLO(weights)
-    kw = dict(imgsz=imgsz, conf=conf, device=device, verbose=False, half=half)
+    # half는 필요할 때만 넘긴다 — ultralytics 8.4에서 deprecated 경고가 프레임마다 찍힘
+    kw = dict(imgsz=imgsz, conf=conf, device=device, verbose=False)
+    if half:
+        kw["half"] = True
     for i in range(warmup):
         model.predict(frames[i % len(frames)], **kw)
     if torch.cuda.is_available():
