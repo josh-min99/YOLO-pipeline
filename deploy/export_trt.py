@@ -70,6 +70,12 @@ def main():
     ap.add_argument("--nms", action="store_true", help="NMS를 엔진에 포함(지연 측정 기준이 달라짐 — 표에 명시)")
     args = ap.parse_args()
 
+    if not Path(args.best).exists():
+        raise SystemExit(
+            f"가중치 없음: {args.best}\n"
+            "  가중치는 git에 없다(용량). Jupyter 파일 브라우저로 marine_spot_results.tgz 업로드 후\n"
+            "  tar -xzf marine_spot_results.tgz  → marine_spot_yolo11s_1280/weights/best.pt")
+
     imgsz = parse_imgsz(args.imgsz)
     tag_sz = f"{imgsz[0]}x{imgsz[1]}" if isinstance(imgsz, list) else f"{imgsz}"
     outdir = Path(args.outdir)
