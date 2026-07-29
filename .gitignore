@@ -16,6 +16,13 @@ weights/
 *.pth
 *.onnx
 
+# deploy outputs (engines are host-specific, never commit)
+engines/
+*.engine
+results/deploy/
+*.avi
+*.mp4
+
 # python
 __pycache__/
 *.pyc

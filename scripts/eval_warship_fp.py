@@ -13,6 +13,35 @@ import argparse
 from pathlib import Path
 
 
+def collect_negatives(data_root, split="val", warship_class=2):
+    """군함이 없는(라벨에 해당 클래스 없음) 프레임 이미지 경로 목록. deploy/eval_engine.py 에서도 사용."""
+    root = Path(data_root)
+    lab_dir, img_dir = root / "labels" / split, root / "images" / split
+    wc = str(warship_class)
+    negs = []
+    for lab in lab_dir.glob("*.txt"):
+        has_w = any(ln.split()[:1] == [wc] for ln in lab.read_text().splitlines() if ln.strip())
+        if not has_w:
+            img = img_dir / (lab.stem + ".jpg")
+            if img.exists():
+                negs.append(str(img))
+    return negs
+
+
+def count_false_alarms(model, negs, conf, warship_class=2, imgsz=1280, batch=16):
+    """(가짜경보 프레임수, 가짜 군함 박스수) — negs 에는 실제 군함이 0이므로 검출=전부 오탐."""
+    frames_fp = boxes_fp = 0
+    for i in range(0, len(negs), batch):
+        res = model.predict(negs[i:i + batch], conf=conf, classes=[warship_class],
+                            imgsz=imgsz, verbose=False)
+        for r in res:
+            n = len(r.boxes)
+            if n:
+                frames_fp += 1
+                boxes_fp += n
+    return frames_fp, boxes_fp
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--best", required=True)
@@ -24,19 +53,7 @@ def main():
     ap.add_argument("--batch", type=int, default=16)
     args = ap.parse_args()
 
-    root = Path(args.data_root)
-    lab_dir = root / "labels" / args.split
-    img_dir = root / "images" / args.split
-    wc = str(args.warship_class)
-
-    # 군함 없는 프레임만 수집(라벨에 class 2 라인 없음)
-    negs = []
-    for lab in lab_dir.glob("*.txt"):
-        has_w = any(ln.split()[:1] == [wc] for ln in lab.read_text().splitlines() if ln.strip())
-        if not has_w:
-            img = img_dir / (lab.stem + ".jpg")
-            if img.exists():
-                negs.append(str(img))
+    negs = collect_negatives(args.data_root, args.split, args.warship_class)
     print(f"군함 없는 {args.split} 프레임: {len(negs)}")
     if not negs:
         raise SystemExit("군함 없는 프레임이 없음 — data-root/split 확인")
@@ -46,18 +63,9 @@ def main():
 
     print(f"\n{'conf':>6} {'가짜경보 프레임':>14} {'프레임오탐율':>12} {'가짜군함 박스수':>14}")
     for conf in [float(c) for c in args.conf_list.split(",")]:
-        frames_fp = 0
-        boxes_fp = 0
         # 군함 클래스만 예측(classes=[2])해서 빠르게
-        for i in range(0, len(negs), args.batch):
-            batch = negs[i:i + args.batch]
-            res = model.predict(batch, conf=conf, classes=[args.warship_class],
-                                imgsz=args.imgsz, verbose=False)
-            for r in res:
-                n = len(r.boxes)
-                if n:
-                    frames_fp += 1
-                    boxes_fp += n
+        frames_fp, boxes_fp = count_false_alarms(model, negs, conf, args.warship_class,
+                                                 args.imgsz, args.batch)
         rate = frames_fp / len(negs)
         print(f"{conf:>6.2f} {frames_fp:>14} {rate:>11.1%} {boxes_fp:>14}")
 

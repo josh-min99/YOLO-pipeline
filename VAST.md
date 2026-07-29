@@ -96,6 +96,25 @@ python scripts/eval_warship_fp.py --best runs/detect/runs/*/weights/best.pt \
 - BoxPR_curve.png: 군함은 recall ~0.95까지 precision ~0.95 유지, **recall>0.97에서 precision 절벽**.
 - 위협탐지는 "recall 0.98일 때 precision", "가짜경보율"을 threshold별 표로 보고할 것.
 
+## 8. 배포 준비 (W6-P1) — TensorRT 변환·패리티·벤치
+
+> 학습이 아니라 **배포 설정 탐색**. 3~5시간짜리 짧은 대여로 끝난다. 상세는 `deploy/README.md`.
+
+```bash
+source /venv/main/bin/activate
+pip install -U ultralytics onnx onnxslim onnxruntime-gpu
+# 데이터는 §7과 동일(datasets/marine_session_spot = 새 장소 홀드아웃 권장), best.pt는 백업본 풀어서 사용
+
+python deploy/export_trt.py --best <best.pt> --imgsz 1280     --formats onnx,fp16,int8
+python deploy/export_trt.py --best <best.pt> --imgsz 736,1280 --formats onnx,fp16,int8   # rect
+python deploy/eval_engine.py  --weights <best.pt>,engines/*.engine --data-root datasets/marine_session_spot
+python deploy/bench_engine.py --weights <best.pt>,engines/*.engine --imgsz-list 1280,736x1280,960,640 \
+    --frames datasets/marine_session_spot/images/val
+```
+- 회수할 것: `results/deploy/parity_*.csv`, `bench_*.csv`, **`engines/*.onnx`**(보드에서 엔진 재빌드용).
+- 🔴 `.engine`은 보드로 가져가도 안 돈다(아키텍처·TRT 버전 종속). **ONNX만 회수.**
+- 🔴 INT8 캘리브레이션은 train 스플릿으로(스크립트가 임시 yaml로 처리). val로 하면 평가셋 누수.
+
 ## 다음(예정)
 - frame-level AUC로 재구성 VAD(60%)와 같은 축에서 비교(프레임 점수 = 군함 conf max).
 - 실시간 데모용 FPS 측정(yolo11n vs s, imgsz 스윕). W1처럼 batch=1 + sync.
