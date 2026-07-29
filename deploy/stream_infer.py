@@ -121,6 +121,8 @@ def main():
     ap.add_argument("--m", type=int, default=10)
     ap.add_argument("--off-patience", type=int, default=15)
     ap.add_argument("--limit", type=int, default=0, help="처리 프레임 수 제한(0=전부)")
+    ap.add_argument("--warmup", type=int, default=3,
+                    help="통계에서 제외할 초기 프레임 수(TRT 컨텍스트·의존성 자동설치로 첫 프레임이 수초 걸림)")
     ap.add_argument("--src-fps", type=float, default=8.0, help="dir: 소스의 가상 fps")
     ap.add_argument("--save", default="", help="오버레이 영상 저장 경로(.mp4)")
     ap.add_argument("--show", action="store_true")
@@ -183,10 +185,13 @@ def main():
                         if cv2.waitKey(1) & 0xFF == ord("q"):
                             break
                 t2 = time.perf_counter()
-                t_infer.append((t1 - t0) * 1e3)
-                t_other.append((t2 - t1) * 1e3)
-                lat.append((t2 - t0) * 1e3)
-                speeds.append(sp)
+                if idx >= args.warmup:      # 워밍업 프레임은 통계에서 제외(평균이 통째로 오염됨)
+                    t_infer.append((t1 - t0) * 1e3)
+                    t_other.append((t2 - t1) * 1e3)
+                    lat.append((t2 - t0) * 1e3)
+                    speeds.append(sp)
+                if idx == args.warmup - 1:
+                    t_start = time.time()   # FPS 계산 기준도 워밍업 직후로 리셋
     except KeyboardInterrupt:
         print("\n중단(Ctrl+C)")
     finally:
