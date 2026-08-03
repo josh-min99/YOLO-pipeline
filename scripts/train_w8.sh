@@ -21,7 +21,7 @@
 #   bash scripts/train_w8.sh eval     # W5 홀드아웃 + 71856 조건별
 set -e
 
-STEP=${1:?prep|stage1|stage2|eval}
+STEP=${1:?prep|prep-real|prep-synth|stage1|stage2|eval}
 SYNTH_ZIPS=${SYNTH_ZIPS:-/workspace/synth_train}      # TS_*.zip / TL_*.zip
 SYNTH_DS=${SYNTH_DS:-datasets/synth_train}            # 변환 결과
 REAL_DATA=${REAL_DATA:-configs/marine.yaml}           # 71858 (지점 홀드아웃 분할)
@@ -33,14 +33,36 @@ WORKERS=${WORKERS:-16}
 
 case "$STEP" in
 
-prep)
+prep-synth)
   # 합성 전체 이미지 + 선박만 라벨. --ships-only 를 주지 않는 것이 옵션 B.
   # 선박 0장 이미지(항공기/새만 있는 것)는 빈 .txt = 배경 negative로 들어간다.
   python scripts/synth71856_to_yolo.py \
       --vs-dir "$SYNTH_ZIPS" --vl-dir "$SYNTH_ZIPS" \
       --out "$SYNTH_DS" --split train
-  # 검증용으로 71856 Validation(선박전용 2,108장)도 붙인다 — 위생 검사 전용.
-  echo "prep 완료. 학습 전 datasets/ds(=71856 val) 가 있는지 확인할 것."
+  echo "합성 prep 완료. 위생 검사용 datasets/ds(71856 val)가 있는지 확인할 것."
+  ;;
+
+prep-real)
+  # stage2가 쓰는 71858 실데이터. VAST.md §3과 동일 절차이되 분할만 다르다 —
+  # 🔴 splits_session_spot(지점 홀드아웃, train 593 / val 270)을 쓴다. W5에서
+  #    가장 보수적이었던 분할이고, "새 장소 일반화"를 판정 기준으로 유지하기 위함.
+  REAL_ZIPS=${REAL_ZIPS:-/workspace/real71858}
+  [ -d labels_train ] || { mkdir -p labels_train && tar -xzf labels_train.tgz -C labels_train --strip-components=1; }
+  echo "라벨 $(ls labels_train | wc -l)개 (41972 기대)"
+  python scripts/extract_images.py \
+      --zip-dir "$(dirname "$(find "$REAL_ZIPS" -name 'TS_*.zip' | head -1)")" \
+      --out datasets/marine_frames
+  python scripts/json_to_yolo.py \
+      --labels-dir labels_train \
+      --images-dir datasets/marine_frames \
+      --splits-dir splits_session_spot \
+      --out datasets/marine --link
+  echo "실데이터 prep 완료. img_missing이 0(또는 손상분 ~254)인지 확인할 것(§14-6)."
+  ;;
+
+prep)
+  bash "$0" prep-real
+  bash "$0" prep-synth
   ;;
 
 stage1)
