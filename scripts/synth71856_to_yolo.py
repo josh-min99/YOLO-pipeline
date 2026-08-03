@@ -1,0 +1,256 @@
+"""
+71856(군 경계 작전 환경 합성데이터) -> YOLO 평가셋 변환 + 조건별 슬라이스 생성.
+
+71858(실촬영)용 json_to_yolo.py와 스키마가 다르다:
+    - bbox 키가 `bounding_box`이고 포맷은 [x, y, w, h]   (xyxy 아님. 샘플 3,176박스로 검증)
+    - 클래스가 class/sub_class 2단이고, 선박 외에 항공기·새·삐라·오물폭탄이 섞여 있음
+    - 클립/프레임 개념이 없는 독립 스틸이라 split 파일이 필요 없음
+    - 조건(센서·계절·주야·해무·황천)이 파일명과 env에 들어 있음
+
+기존 탐지기가 3클래스(0 어선 / 1 상선 / 2 군함)이므로 선박만 매핑하고 나머지는 버린다.
+버린 객체가 화면에 남아 있으면 오탐으로 집계되므로, 그런 이미지는 meta.csv의
+n_other > 0 으로 표시해 두고 평가 시 --ships-only 슬라이스로 걸러낼 수 있게 한다.
+
+입력은 zip(vast/외장SSD의 배포본) 또는 평범한 폴더(로컬 샘플) 둘 다 받는다.
+
+출력 (ultralytics 표준):
+    <out>/images/<split>/<stem>.jpg
+    <out>/labels/<split>/<stem>.txt        (cls cx cy w h, 0~1 정규화)
+    <out>/meta.csv                          stem,sensor,season,night,weather,wave,n_ship,n_other
+    <out>/slices/<name>.txt                 조건별 이미지 경로 목록
+    <out>/slices/<name>.yaml                그 목록을 val로 쓰는 data config
+"""
+import argparse, csv, json, re, shutil, zipfile
+from collections import Counter
+from pathlib import Path
+
+# 71856 sub_class -> 기존 marine.yaml 클래스 인덱스
+SHIP_MAP = {11: 0, 13: 1, 12: 2}      # 어선->0, 상선->1, 군함->2
+CLASS_NAMES = {0: "fishing_boat", 1: "merchant_ship", 2: "warship"}
+
+# EO_SU_DT_W1_H1_A1A5A4_0001 -> 센서_계절_주야_해무_황천_객체조합_인덱스
+STEM_RE = re.compile(r"^(EO|IR)_(SU|WI)_(DT|NT)_W(\d+)_H(\d+)_([A-Z0-9]+)_(\d+)$")
+
+
+def parse_stem(stem):
+    """파일명에서 조건 파싱. 규칙에 안 맞으면 None."""
+    m = STEM_RE.match(stem)
+    if not m:
+        return None
+    return dict(sensor=m.group(1), season=m.group(2), night=m.group(3),
+                weather=int(m.group(4)), wave=int(m.group(5)))
+
+
+def convert_one(d, stem):
+    """label dict -> (yolo 라인들, 선박수, 비선박수). bounding_box는 [x,y,w,h]."""
+    img = d.get("image", {})
+    W = img.get("width") or 1920
+    H = img.get("height") or 1080
+    lines, n_other = [], 0
+    for a in d.get("annotations", []):
+        c = SHIP_MAP.get(a.get("sub_class"))
+        if c is None:
+            n_other += 1          # 항공기·새·삐라·오물폭탄 -> 라벨에서 제외
+            continue
+        # 🔴 [w, h, x, y] 순서다 ([x,y,w,h] 아님). 데이터설명서 부록은 x,y,w,h로 적고
+        # 있으나 실제 배포본은 폭·높이가 먼저다. 경계 검사(x+w<=W)로는 두 해석이
+        # x+w == w+x 로 같아져서 절대 구분되지 않는다 — 모델 예측 박스와 대조해
+        # 확인했다(우하단 모서리는 일치하고 좌상단만 어긋나는 패턴).
+        w, h, x, y = a["bounding_box"]
+        cx, cy = (x + w / 2) / W, (y + h / 2) / H
+        nw, nh = w / W, h / H
+        cx, cy = min(max(cx, 0.0), 1.0), min(max(cy, 0.0), 1.0)
+        nw, nh = min(max(nw, 0.0), 1.0), min(max(nh, 0.0), 1.0)
+        lines.append(f"{c} {cx:.6f} {cy:.6f} {nw:.6f} {nh:.6f}")
+    return lines, len(lines), n_other
+
+
+def iter_labels(vl_dir, labels_dir):
+    """(stem, dict) 스트림. zip 우선, 없으면 폴더."""
+    if vl_dir:
+        for z in sorted(Path(vl_dir).rglob("*.zip")):
+            zf = zipfile.ZipFile(z)
+            for name in zf.namelist():
+                if not name.lower().endswith(".json"):
+                    continue
+                stem = Path(name.strip("/")).stem
+                try:
+                    yield stem, json.loads(zf.read(name))
+                except (zipfile.BadZipFile, json.JSONDecodeError, KeyError):
+                    yield stem, None          # 손상 항목(§10-3) — 호출부에서 카운트
+    else:
+        for p in sorted(Path(labels_dir).rglob("*.json")):
+            try:
+                yield p.stem, json.loads(p.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                yield p.stem, None
+
+
+def build_image_index(vs_dir, images_dir, ext):
+    """stem -> ('zip', zipfile, entryname) 또는 ('file', path, None). rglob은 1회만(§9-5)."""
+    idx = {}
+    if vs_dir:
+        for z in sorted(Path(vs_dir).rglob("*.zip")):
+            zf = zipfile.ZipFile(z)
+            for name in zf.namelist():
+                if name.lower().endswith(ext):
+                    idx[Path(name.strip("/")).stem] = ("zip", zf, name)
+    else:
+        for p in Path(images_dir).rglob(f"*{ext}"):
+            idx[p.stem] = ("file", p, None)
+    return idx
+
+
+def write_slices(out, split, rows, img_ext):
+    """조건별 이미지 목록 txt + data yaml 생성."""
+    slice_dir = out / "slices"
+    slice_dir.mkdir(parents=True, exist_ok=True)
+    img_dir = (out / "images" / split).resolve()
+
+    groups = {}
+    for r in rows:
+        p = str(img_dir / f"{r['stem']}{img_ext}")
+        ship_only = r["n_other"] == 0
+        for key in (f"cond_{r['sensor']}_{r['season']}_{r['night']}",
+                    f"weather_{r['weather']}",
+                    f"wave_{r['wave']}",
+                    "all"):
+            groups.setdefault(key, []).append(p)
+            if ship_only:
+                groups.setdefault(key + "__shipsonly", []).append(p)
+
+    names_block = "\n".join(f"  {i}: {n}" for i, n in sorted(CLASS_NAMES.items()))
+    for key, paths in sorted(groups.items()):
+        txt = slice_dir / f"{key}.txt"
+        txt.write_text("\n".join(paths), encoding="utf-8")
+        (slice_dir / f"{key}.yaml").write_text(
+            f"# auto-generated by synth71856_to_yolo.py -- slice '{key}' ({len(paths)} images)\n"
+            f"path: {out.resolve()}\n"
+            # ultralytics 8.4는 val만 돌릴 때도 train 키를 요구한다. 학습에 쓰지 않으므로
+            # val과 같은 목록을 넣어 둔다(이 데이터셋은 평가 전용).
+            f"train: {txt.resolve()}\n"
+            f"val: {txt.resolve()}\n\n"
+            f"names:\n{names_block}\n",
+            encoding="utf-8")
+    return groups
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    g = ap.add_argument_group("입력 (zip 또는 폴더)")
+    g.add_argument("--vs-dir", help="VS_*.zip 들이 있는 폴더(이미지)")
+    g.add_argument("--vl-dir", help="VL_*.zip 들이 있는 폴더(라벨)")
+    g.add_argument("--images-dir", help="이미지 폴더(zip 대신)")
+    g.add_argument("--labels-dir", help="라벨 JSON 폴더(zip 대신)")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--split", default="val")
+    ap.add_argument("--img-ext", default=".jpg")
+    ap.add_argument("--link", action="store_true", help="폴더 입력일 때 복사 대신 절대경로 심링크(§14-6)")
+    ap.add_argument("--labels-only", action="store_true", help="이미지 없이 라벨·meta만(로컬 점검용)")
+    ap.add_argument("--ships-only", action="store_true",
+                    help="선박 외 객체(항공기·새·삐라·오물폭탄)가 하나도 없는 이미지만. "
+                         "미학습 클래스가 오탐으로 집계되는 것을 막는다. 전체의 14%%(2,108장)")
+    ap.add_argument("--limit", type=int, help="처음 N장만(스모크 테스트)")
+    ap.add_argument("--rebuild-slices", action="store_true",
+                    help="meta.csv만 읽어 슬라이스 txt/yaml 재생성. 슬라이스에는 절대경로가 "
+                         "들어가므로 다른 머신으로 옮긴 뒤 반드시 한 번 돌려야 한다.")
+    args = ap.parse_args()
+
+    out = Path(args.out)
+    if args.rebuild_slices:
+        with (out / "meta.csv").open(encoding="utf-8") as f:
+            rows = [{**r, "n_other": int(r["n_other"]), "n_ship": int(r["n_ship"])}
+                    for r in csv.DictReader(f)]
+        groups = write_slices(out, args.split, rows, args.img_ext)
+        print(f"슬라이스 {len(groups)}개 재생성 -> {out/'slices'} (기준 {out.resolve()})")
+        return
+
+    assert args.vl_dir or args.labels_dir, "--vl-dir 또는 --labels-dir 필요"
+    lab_out = out / "labels" / args.split
+    img_out = out / "images" / args.split
+    lab_out.mkdir(parents=True, exist_ok=True)
+
+    img_index = {}
+    if not args.labels_only:
+        assert args.vs_dir or args.images_dir, "--vs-dir 또는 --images-dir 필요(또는 --labels-only)"
+        img_index = build_image_index(args.vs_dir, args.images_dir, args.img_ext)
+        img_out.mkdir(parents=True, exist_ok=True)
+        print(f"image index: {len(img_index)} files")
+
+    rows = []
+    n_frame = n_box = n_bg = n_miss = n_bad = n_unparsed = n_skip_other = 0
+    cls_count, other_count = Counter(), 0
+
+    for stem, d in iter_labels(args.vl_dir, args.labels_dir):
+        if args.limit and n_frame >= args.limit:
+            break
+        if d is None:
+            n_bad += 1
+            continue
+        cond = parse_stem(stem)
+        if cond is None:
+            n_unparsed += 1
+            continue
+
+        # 라벨 먼저 변환 — --ships-only면 버릴 이미지를 굳이 꺼내지 않기 위해
+        lines, n_ship, n_other = convert_one(d, stem)
+        if args.ships_only and n_other:
+            n_skip_other += 1
+            continue
+
+        if not args.labels_only:
+            src = img_index.get(stem)
+            if src is None:
+                n_miss += 1
+                continue
+            dst = img_out / f"{stem}{args.img_ext}"
+            if dst.is_symlink() and not dst.exists():
+                dst.unlink()                       # 이전 실행이 남긴 깨진 링크 정리
+            if not (dst.exists() or dst.is_symlink()):
+                kind, obj, entry = src
+                if kind == "zip":
+                    try:
+                        dst.write_bytes(obj.read(entry))
+                    except (zipfile.BadZipFile, KeyError):
+                        n_bad += 1                 # zip 손상 항목(§10-3)
+                        continue
+                elif args.link:
+                    try:
+                        dst.symlink_to(obj.resolve())
+                    except (OSError, NotImplementedError):
+                        shutil.copy2(obj, dst)
+                else:
+                    shutil.copy2(obj, dst)
+
+        (lab_out / f"{stem}.txt").write_text("\n".join(lines), encoding="utf-8")
+        for ln in lines:
+            cls_count[int(ln.split()[0])] += 1
+        other_count += n_other
+        n_frame += 1
+        n_box += n_ship
+        if not lines:
+            n_bg += 1
+        rows.append(dict(stem=stem, **cond, n_ship=n_ship, n_other=n_other))
+
+    with (out / "meta.csv").open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["stem", "sensor", "season", "night",
+                                          "weather", "wave", "n_ship", "n_other"])
+        w.writeheader()
+        w.writerows(rows)
+
+    print(f"[{args.split}] frames={n_frame} ship_boxes={n_box} "
+          f"ship_free={n_bg} dropped_nonship={other_count}")
+    print("  클래스별 박스:", {CLASS_NAMES[k]: v for k, v in sorted(cls_count.items())})
+    print(f"  img_missing={n_miss} corrupt={n_bad} unparsed_stem={n_unparsed} "
+          f"skipped_has_nonship={n_skip_other}")
+
+    if not args.labels_only:
+        groups = write_slices(out, args.split, rows, args.img_ext)
+        print(f"  슬라이스 {len(groups)}개 -> {out/'slices'}")
+        for k in ("all", "all__shipsonly"):
+            if k in groups:
+                print(f"    {k}: {len(groups[k])} images")
+
+
+if __name__ == "__main__":
+    main()
