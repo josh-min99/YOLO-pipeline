@@ -144,10 +144,21 @@ def main():
                     help="선박 외 객체(항공기·새·삐라·오물폭탄)가 하나도 없는 이미지만. "
                          "미학습 클래스가 오탐으로 집계되는 것을 막는다. 전체의 14%%(2,108장)")
     ap.add_argument("--limit", type=int, help="처음 N장만(스모크 테스트)")
+    ap.add_argument("--rebuild-slices", action="store_true",
+                    help="meta.csv만 읽어 슬라이스 txt/yaml 재생성. 슬라이스에는 절대경로가 "
+                         "들어가므로 다른 머신으로 옮긴 뒤 반드시 한 번 돌려야 한다.")
     args = ap.parse_args()
 
-    assert args.vl_dir or args.labels_dir, "--vl-dir 또는 --labels-dir 필요"
     out = Path(args.out)
+    if args.rebuild_slices:
+        with (out / "meta.csv").open(encoding="utf-8") as f:
+            rows = [{**r, "n_other": int(r["n_other"]), "n_ship": int(r["n_ship"])}
+                    for r in csv.DictReader(f)]
+        groups = write_slices(out, args.split, rows, args.img_ext)
+        print(f"슬라이스 {len(groups)}개 재생성 -> {out/'slices'} (기준 {out.resolve()})")
+        return
+
+    assert args.vl_dir or args.labels_dir, "--vl-dir 또는 --labels-dir 필요"
     lab_out = out / "labels" / args.split
     img_out = out / "images" / args.split
     lab_out.mkdir(parents=True, exist_ok=True)
