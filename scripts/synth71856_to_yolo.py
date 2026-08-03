@@ -52,7 +52,11 @@ def convert_one(d, stem):
         if c is None:
             n_other += 1          # 항공기·새·삐라·오물폭탄 -> 라벨에서 제외
             continue
-        x, y, w, h = a["bounding_box"]
+        # 🔴 [w, h, x, y] 순서다 ([x,y,w,h] 아님). 데이터설명서 부록은 x,y,w,h로 적고
+        # 있으나 실제 배포본은 폭·높이가 먼저다. 경계 검사(x+w<=W)로는 두 해석이
+        # x+w == w+x 로 같아져서 절대 구분되지 않는다 — 모델 예측 박스와 대조해
+        # 확인했다(우하단 모서리는 일치하고 좌상단만 어긋나는 패턴).
+        w, h, x, y = a["bounding_box"]
         cx, cy = (x + w / 2) / W, (y + h / 2) / H
         nw, nh = w / W, h / H
         cx, cy = min(max(cx, 0.0), 1.0), min(max(cy, 0.0), 1.0)
