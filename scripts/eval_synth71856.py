@@ -19,11 +19,11 @@ from pathlib import Path
 WARSHIP = 2   # marine.yaml: 0 fishing_boat / 1 merchant_ship / 2 warship
 
 
-def run_slice(YOLO, weights, yaml_path, imgsz, device, conf, half):
-    """ultralytics val 1회 -> dict. 클래스가 비어 있는 슬라이스도 죽지 않게 방어."""
+def run_slice(YOLO, weights, yaml_path, imgsz, device, conf):
+    """ultralytics val 1회 -> dict. 클래스가 비어 있는 슬라이스도 죽지 않게 방어.
+    half= 는 8.4에서 deprecated(quantize로 대체) — 넘기지 않는다(커밋 b64edf3와 같은 건)."""
     m = YOLO(weights).val(data=str(yaml_path), imgsz=imgsz, device=device,
-                          conf=conf, half=half, verbose=False, plots=False,
-                          save_json=False)
+                          conf=conf, verbose=False, plots=False, save_json=False)
     b = m.box
     out = dict(mAP50=float(b.map50), mAP50_95=float(b.map),
                P=float(b.mp), R=float(b.mr))
@@ -41,7 +41,6 @@ def main():
     ap.add_argument("--imgsz", type=int, default=1280)
     ap.add_argument("--device", default="0")
     ap.add_argument("--op-conf", type=float, default=0.6, help="운용점 conf(W5 기준)")
-    ap.add_argument("--half", action="store_true")
     ap.add_argument("--only", help="쉼표구분 접두사 필터(예: all,cond_)")
     ap.add_argument("--out", default="results/synth71856_conditions.csv")
     args = ap.parse_args()
@@ -61,9 +60,9 @@ def main():
         print(f"--- {y.stem} ({n_img} images)")
         r = dict(slice=y.stem, n_images=n_img)
         r.update({f"map_{k}": v for k, v in
-                  run_slice(YOLO, args.weights, y, args.imgsz, args.device, 0.001, args.half).items()})
+                  run_slice(YOLO, args.weights, y, args.imgsz, args.device, 0.001).items()})
         r.update({f"op_{k}": v for k, v in
-                  run_slice(YOLO, args.weights, y, args.imgsz, args.device, args.op_conf, args.half).items()})
+                  run_slice(YOLO, args.weights, y, args.imgsz, args.device, args.op_conf).items()})
         rows.append(r)
         print(f"    mAP50={r['map_mAP50']:.3f}  군함mAP50={r.get(f'map_mAP50_cls{WARSHIP}', float('nan')):.3f}  "
               f"운용점 P={r['op_P']:.3f} R={r['op_R']:.3f}")
