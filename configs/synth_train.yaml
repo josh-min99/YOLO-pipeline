@@ -1,0 +1,15 @@
+# W8 stage1 (합성 사전학습) 전용 data config.
+# train = 71856 Training 야간 EO + IR 전량(선박만 라벨, 옵션 B)
+# val   = 71856 Validation 선박전용 2,108장 — 학습이 먹는지 보는 위생 검사용일 뿐,
+#         이 숫자는 같은 렌더러 안의 성적이라 성과 지표가 아니다(W7 §5).
+#
+# 🔴 path는 학습 호스트에 맞춰 지정할 것(로컬/vast 다름). vast 기준 /workspace/YOLO-pipeline.
+# 🔴 최종 판정은 configs/marine.yaml(71858 실데이터 홀드아웃)로 한다.
+path: /workspace/YOLO-pipeline
+train: datasets/synth_train/images/train
+val: datasets/ds/images/val
+
+names:
+  0: fishing_boat   # 어선
+  1: merchant_ship  # 상선
+  2: warship        # 군함 (ANOMALY / target)
