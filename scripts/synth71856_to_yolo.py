@@ -111,9 +111,13 @@ def write_slices(out, split, rows, img_ext):
     for r in rows:
         p = str(img_dir / f"{r['stem']}{img_ext}")
         ship_only = r["n_other"] == 0
-        for key in (f"cond_{r['sensor']}_{r['season']}_{r['night']}",
+        cond = f"{r['sensor']}_{r['season']}_{r['night']}"
+        for key in (f"cond_{cond}",
                     f"weather_{r['weather']}",
                     f"wave_{r['wave']}",
+                    # 교차 슬라이스: 해무는 zip 분할 축(센서·계절·주야)과 직교라서
+                    # 축을 따로 보면 "주간인데 안개" 같은 조합이 평균에 묻힌다.
+                    f"x_{cond}_W{r['weather']}",
                     "all"):
             groups.setdefault(key, []).append(p)
             if ship_only:
