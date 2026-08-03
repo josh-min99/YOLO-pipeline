@@ -79,8 +79,14 @@ stage1)
 stage2)
   # stage1 가중치에서 실데이터로 파인튜닝. 최종 가중치를 실 도메인에 정렬시키는 단계.
   # lr0을 낮춰 stage1이 익힌 야간 특징을 지우지 않게 한다.
+  # 🔴 ultralytics는 project=runs를 runs/detect/runs/ 아래에 저장한다(VAST.md §14-7).
+  #    경로를 가정했다가 stage1이 정상 종료했는데도 chain2가 "가중치 없음"으로
+  #    중단해 GPU 4장을 50분 놀렸다. 가정하지 말고 찾아서 쓴다.
+  S1=$(find runs -path "*w8_stage1_synth/weights/best.pt" | head -1)
+  [ -n "$S1" ] || { echo "stage1 가중치를 찾을 수 없음"; exit 1; }
+  echo "stage1 가중치: $S1"
   yolo detect train \
-    model=runs/w8_stage1_synth/weights/best.pt \
+    model="$S1" \
     data="$REAL_DATA" \
     imgsz="$IMGSZ" epochs=100 batch="$BATCH" \
     device="$DEVICE" workers="$WORKERS" \
@@ -90,7 +96,9 @@ stage2)
   ;;
 
 eval)
-  W=runs/w8_stage2_real/weights/best.pt
+  W=$(find runs -path "*w8_stage2_real/weights/best.pt" | head -1)
+  [ -n "$W" ] || { echo "stage2 가중치를 찾을 수 없음"; exit 1; }
+  echo "stage2 가중치: $W"
   echo "=== [주 판정] W5 실데이터 홀드아웃 — 주간 성능 회귀 확인 ==="
   CUDA_VISIBLE_DEVICES=0 yolo detect val model="$W" data="$REAL_DATA" imgsz="$IMGSZ"
   echo "=== [위생 검사] 71856 조건별 — 합성 도메인 내부 수치, 성과로 보고하지 말 것 ==="
