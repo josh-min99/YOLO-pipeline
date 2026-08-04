@@ -1,0 +1,18 @@
+# W8b stage2-rehearsal — 실데이터 + 합성 야간을 함께 학습.
+#
+# 왜: stage2를 실데이터(전부 주간)만으로 돌렸더니 stage1이 익힌 야간 특징이
+# 씻겨나갔다(71856 군함 mAP50 0.876 -> 0.449). 학습 내내 야간 샘플을 함께
+# 보여주면 그쪽 손실이 살아있어 주간 전용으로 치우치지 못한다.
+#
+# 🔴 val은 실데이터만 쓴다. 판정 기준(W5 지점 홀드아웃)을 바꾸면 이전 결과와
+#    비교가 안 된다. 합성 성능은 eval_synth71856.py로 따로 잰다.
+path: /workspace/YOLO-pipeline
+train:
+  - datasets/marine/images/train        # 71858 실데이터(주간) 28,698장
+  - datasets/synth_night/images/train   # 71856 합성 야간 EO+IR 28,000장 (약 1:1)
+val: datasets/marine/images/val         # 71858 지점 홀드아웃 13,020장
+
+names:
+  0: fishing_boat   # 어선
+  1: merchant_ship  # 상선
+  2: warship        # 군함 (ANOMALY / target)
