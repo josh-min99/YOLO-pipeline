@@ -120,11 +120,53 @@ python scripts/json_to_yolo.py \
 bash scripts/train.sh yolo11s.pt 1280 100 16
 ```
 
-분할을 새로 만들려면 `scripts/build_split.py`(클립) 또는 `scripts/build_split_session.py`(세션·지점)를 씁니다.
+> 🔴 **분할 파일을 새로 만들지 마세요.** `splits*/`의 `.txt`는 repo에 커밋돼 있고, **그 파일을 그대로 써야 같은 벤치마크**입니다. `build_split*.py`로 재생성하면 클립 배정이 달라져 다른 val셋이 되고, 우리 숫자와 비교가 불가능해집니다. (새 실험 설계를 할 때만 재생성하세요.)
 
 ---
 
-## 6. 팀원이 빠지기 쉬운 함정
+## 6. 다른 모델을 같은 벤치마크로 재기
+
+### 6-1. 먼저 데이터셋이 동일한지 확인
+`json_to_yolo.py` 출력이 **정확히 이 숫자**여야 합니다. 하나라도 다르면 벤치마크가 다른 것입니다.
+
+```
+[train] frames=28698  boxes=29990  img_missing=252
+[val]   frames=13020  boxes=14272  img_missing=2
+```
+val 인스턴스 내역: 어선 7,919 · 상선 1,910 · 군함 4,443 (총 14,272)
+
+### 6-2. 평가 설정 (반드시 고정)
+
+| 항목 | 값 | 이유 |
+|---|---|---|
+| `imgsz` | **1280** | 군함이 native 1920에서 50~100px로 작음. 640으로 재면 크게 떨어져 비교 불가 |
+| `conf` (mAP용) | **0.001** (ultralytics 기본) | 표준 mAP 정의. 높이면 잘린 값이 나옴 |
+| `iou` (NMS) | 0.7 (기본) | |
+| mAP 기준 | mAP50 = IoU 0.5, mAP50-95 = 0.5:0.95 | |
+| val 데이터 | `splits_session_spot` 기준 13,020장 | 새 장소 일반화 |
+
+```bash
+yolo detect val model=<모델>.pt data=configs/marine.yaml imgsz=1280 plots=False
+```
+
+**운영점 지표는 따로 재세요.** mAP와 섞으면 안 됩니다:
+```bash
+yolo detect val model=<모델>.pt data=configs/marine.yaml imgsz=1280 conf=0.6
+```
+우리 기준값은 mAP50 0.979 / 운영점(conf 0.6) 군함 P0.951 R0.975 입니다.
+
+### 6-3. ⚠️ 다른 프레임워크로 잰다면
+위 숫자는 **ultralytics의 mAP 구현** 기준입니다. mmdetection·detectron2·COCO API는 보간 방식과 매칭 규칙이 미묘하게 달라 **같은 예측이라도 1~2%p 차이**가 날 수 있습니다.
+
+프레임워크가 다르면 mAP 수치를 직접 비교하지 말고, 둘 중 하나를 하세요:
+- 예측 결과를 COCO JSON으로 내보내 **같은 평가기**로 양쪽을 재기
+- 또는 우리 `best_spot.pt`를 그쪽 평가기로도 돌려 **기준점을 같이 옮기기**
+
+프레임워크가 같고(ultralytics) 위 설정을 지켰다면 그대로 비교 가능합니다.
+
+---
+
+## 7. 팀원이 빠지기 쉬운 함정
 
 | | 내용 |
 |---|---|
@@ -136,7 +178,7 @@ bash scripts/train.sh yolo11s.pt 1280 100 16
 
 ---
 
-## 7. 관련 파일
+## 8. 관련 파일
 
 | 파일 | 내용 |
 |---|---|
