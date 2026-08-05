@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 
 class FrameSource:
@@ -64,7 +65,6 @@ class DirSource(FrameSource):
     def __iter__(self):
         for i, f in enumerate(self.files):
             # 한글 경로 대비: imread 대신 imdecode (유의사항 §9-4)
-            import numpy as np
             frame = cv2.imdecode(np.fromfile(str(f), dtype=np.uint8), cv2.IMREAD_COLOR)
             if frame is None:
                 continue
@@ -169,6 +169,55 @@ class LiveSource(FrameSource):
         return s
 
 
+class _GstPipeCap:
+    """gst-launch 를 서브프로세스로 띄우고 raw BGR 프레임을 표준출력으로 받는다.
+
+    왜 이렇게 하나: 이 컨테이너의 OpenCV 는 **GStreamer 지원 없이 빌드**돼 있어
+    (`cv2.getBuildInformation()` → `GStreamer: NO`) `CAP_GSTREAMER` 를 못 쓴다.
+    그런데 GStreamer 자체와 NVIDIA 플러그인(nvv4l2decoder·nvvidconv)은 컨테이너에 있다.
+    → OpenCV 를 우회해서 파이프로 직접 받는다. cap 인터페이스만 흉내내면 LiveSource 를 그대로 쓴다.
+
+    프레임 크기가 고정(W×H×3)이라 파이프에서 정확히 그만큼씩 끊어 읽으면 된다.
+    """
+
+    def __init__(self, pipeline, width, height):
+        import shlex
+        import subprocess
+        self.w, self.h = width, height
+        self.fsize = width * height * 3
+        self.proc = subprocess.Popen(
+            ["gst-launch-1.0", "-q"] + shlex.split(pipeline),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+        self.buf = bytearray(self.fsize)
+
+    def isOpened(self):
+        return self.proc.poll() is None
+
+    def read(self):
+        view = memoryview(self.buf)
+        got = 0
+        while got < self.fsize:                       # 파이프는 부분 읽기가 나온다
+            n = self.proc.stdout.readinto(view[got:])
+            if not n:
+                return False, None
+            got += n
+        return True, np.frombuffer(self.buf, np.uint8).reshape(self.h, self.w, 3).copy()
+
+    def release(self):
+        try:
+            self.proc.terminate()
+            self.proc.wait(timeout=3)
+        except Exception:
+            self.proc.kill()
+
+    def stderr_tail(self, n=6):
+        try:
+            self.proc.stderr.close()
+        except Exception:
+            pass
+        return ""
+
+
 def _scaled_caps(out_w, out_h):
     """nvvidconv 출력 caps. out_* 를 주면 VIC 가 리사이즈까지 해서 CPU 전처리를 걷어낸다.
 
@@ -197,7 +246,7 @@ def _usb_pipeline(idx, width, height, fps, fmt="mjpg", out_w=None, out_h=None):
         head = (f"{src} ! video/x-raw,format=YUY2,width={width},height={height},"
                 f"framerate={fps}/1 ! ")
     return (head + f"nvvidconv ! {_scaled_caps(out_w, out_h)} ! videoconvert ! "
-            f"video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false")
+            f"video/x-raw,format=BGR ! fdsink fd=1 sync=false")
 
 
 def _csi_pipeline(sensor_id, width, height, fps):
@@ -234,11 +283,16 @@ def open_source(spec, fps=8.0, limit=0, loop=False, width=1920, height=1080,
     if spec.startswith("usb:"):
         idx = int(spec.split(":", 1)[1])
         if gst:
+            ow = pre_w or width
+            oh = pre_h or height
             pipe = _usb_pipeline(idx, width, height, cam_fps, cam_fmt, pre_w, pre_h)
-            print(f"[usb] gstreamer: {pipe}")
-            cap = cv2.VideoCapture(pipe, cv2.CAP_GSTREAMER)
-            if cap.isOpened():
+            print(f"[usb] gstreamer(HW): {pipe}")
+            cap = _GstPipeCap(pipe, ow, oh)
+            ok, fr = cap.read()                 # 첫 프레임으로 실제 동작 확인
+            if ok and fr is not None:
+                print(f"[usb] HW 경로 OK — 프레임 {fr.shape[1]}x{fr.shape[0]}")
                 return LiveSource(cap, "usb-gst", limit)
+            cap.release()
             print("[usb] gstreamer 파이프라인 실패 → V4L2 폴백(CPU 디코딩·리사이즈)")
         cap = cv2.VideoCapture(idx, cv2.CAP_V4L2 if hasattr(cv2, "CAP_V4L2") else cv2.CAP_ANY)
         # 🔴 FOURCC 를 먼저, 그리고 반드시 지정한다.
