@@ -69,18 +69,25 @@ def encode_clip(frames, W, H, kbps, out_path, fps=30):
             f.write(fr.tobytes())
     gst(f"filesrc location={raw} ! rawvideoparse width={W} height={H} format=bgr "
         f"framerate={fps}/1 ! videoconvert ! x264enc bitrate={kbps} speed-preset=veryfast "
-        f"key-int-max={fps} ! h264parse ! matroskamux ! filesink location={out_path}")
+        f"key-int-max={fps} ! video/x-h264,stream-format=byte-stream,alignment=au ! "
+        f"filesink location={out_path}")
     raw.unlink()
     return out_path.stat().st_size
 
 
 def decode_clip(path, W, H, n):
-    """H.264 → 원본 해상도 BGR 프레임들. 디코딩은 HW(nvv4l2decoder)."""
+    """H.264 → 원본 해상도 BGR 프레임들.
+
+    🔴 디코더는 **소프트웨어(avdec_h264)** 를 쓴다. 이 보드/컨테이너에서 nvv4l2decoder 의
+       H.264 경로가 `Failed to process frame` 으로 죽는다(MJPEG 경로는 정상 동작).
+       이 실험이 재는 것은 **인코더 쪽 손실**이고 H.264 디코딩은 표준상 결정적이라
+       SW/HW 가 같은 픽셀을 낸다 — 따라서 정확도 결론에는 영향이 없다.
+       (HW H.264 디코딩은 RTSP 처리량 문제로 따로 남는 과제다.)
+    """
     p = subprocess.Popen(
         ["gst-launch-1.0", "-q"] + shlex.split(
-            f"filesrc location={path} ! matroskademux ! h264parse ! nvv4l2decoder ! "
-            f"nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw,format=BGR ! "
-            f"fdsink fd=1"),
+            f"filesrc location={path} ! h264parse ! avdec_h264 ! "
+            f"videoconvert ! video/x-raw,format=BGR ! fdsink fd=1"),
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
     fsize = W * H * 3
     out, buf = [], bytearray(fsize)
@@ -171,7 +178,7 @@ def main():
                 continue
             H, W = frames[0].shape[:2]
             if kbps:
-                mkv = tmp / f"{clip}.mkv"
+                mkv = tmp / f"{clip}.h264"
                 nbytes += encode_clip(frames, W, H, kbps, mkv)
                 dec = decode_clip(mkv, W, H, len(frames))
                 mkv.unlink(missing_ok=True)
