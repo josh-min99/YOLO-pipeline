@@ -75,6 +75,21 @@ def find_trtexec():
     return shutil.which("trtexec")
 
 
+def onnx_is_dynamic(path):
+    """입력에 동적 차원(0 또는 심볼)이 하나라도 있으면 True. 없으면 --shapes 를 주면 안 된다."""
+    try:
+        import onnx
+        g = onnx.load(path).graph
+        for i in g.input:
+            for d in i.type.tensor_type.shape.dim:
+                if d.dim_value == 0:        # dim_param(심볼) 이면 dim_value 가 0
+                    return True
+        return False
+    except Exception as e:
+        print(f"  [!] ONNX 입력 shape 확인 실패({e}) — --shapes 를 주는 쪽으로 진행")
+        return True
+
+
 def build_with_trtexec(onnx, imgsz, out, half, workspace_gb, input_name="images"):
     """ONNX → .engine (ultralytics 미경유). 메타데이터가 없는 엔진이 나온다 — 함정 1-b 참고."""
     exe = find_trtexec()
@@ -84,7 +99,14 @@ def build_with_trtexec(onnx, imgsz, out, half, workspace_gb, input_name="images"
             "  점검: bash deploy/jetson/setup.sh")
     h, w = (imgsz, imgsz) if isinstance(imgsz, int) else imgsz
     cmd = [exe, f"--onnx={onnx}", f"--saveEngine={out}",
-           f"--shapes={input_name}:1x3x{h}x{w}", f"--memPoolSize=workspace:{int(workspace_gb*1024)}"]
+           f"--memPoolSize=workspace:{int(workspace_gb*1024)}"]
+    # 🔴 정적 shape ONNX 에 --shapes 를 주면 trtexec 이 거부한다
+    #    ("Static model does not take explicit shapes"). 파서는 멀쩡한데 셋업에서 죽어
+    #    'Network And Config setup failed' 만 뜨므로 원인을 찾기 어렵다.
+    if onnx_is_dynamic(onnx):
+        cmd.insert(3, f"--shapes={input_name}:1x3x{h}x{w}")
+    else:
+        print(f"  정적 shape ONNX ({h}x{w}) — --shapes 생략")
     if half:
         cmd.append("--fp16")
     print("[trtexec] " + " ".join(cmd))
