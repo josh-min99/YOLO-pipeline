@@ -137,6 +137,10 @@ def main():
                     help="라이브 입력을 직접 읽는다(프레임 안 버림). 처리가 입력보다 빠를 때 쓴다")
     ap.add_argument("--save", default="", help="오버레이 영상 저장 경로(.mp4)")
     ap.add_argument("--show", action="store_true")
+    ap.add_argument("--web", type=int, default=0,
+                    help="웹 모니터링 뷰 포트(예: 8080). 브라우저에서 http://<보드IP>:포트")
+    ap.add_argument("--web-quality", type=int, default=70, help="웹 뷰 JPEG 품질")
+    ap.add_argument("--web-width", type=int, default=1280, help="웹 뷰 최대 폭(전송량 절감)")
     ap.add_argument("--outdir", default="runs/deploy", help="이벤트·스냅샷·리포트")
     ap.add_argument("--no-snapshots", action="store_true")
     ap.add_argument("--tag", default="", help="리포트 파일 이름에 붙일 식별자")
@@ -156,6 +160,11 @@ def main():
     outdir = Path(args.outdir)
     logger = EventLogger(outdir, save_snapshots=not args.no_snapshots)
     writer = None
+    web = None
+    if args.web:
+        from webview import WebView
+        web = WebView(args.web, quality=args.web_quality, max_width=args.web_width,
+                      source=f"{args.source}  ·  {Path(str(args.model)).name}  ·  imgsz={imgsz}")
 
     cw, ch = [int(v) for v in args.cam_size.lower().split("x")]
     pw = ph = None
@@ -180,12 +189,24 @@ def main():
                 t1 = time.perf_counter()
                 ev = engine.update(idx, ts, dets)
                 # 스냅샷은 박스·경보 표시가 그려진 프레임으로 남긴다(운용자가 보는 화면 = 증거)
-                need_vis = bool(args.save or args.show or (ev and not args.no_snapshots))
+                need_vis = bool(args.save or args.show or web
+                                or (ev and not args.no_snapshots))
                 vis = None
                 if need_vis:
                     fps_now = idx / max(1e-6, time.time() - t_start)
                     vis = draw(frame.copy(), dets, engine.active_ids, names, engine.alarm,
                                f"{fps_now:.1f} FPS  frame {idx}")
+                if web is not None:
+                    # 프레임 참조만 넘긴다(인코딩은 브라우저 스레드가 함)
+                    n_done = len(lat)
+                    web.publish(vis,
+                                fps=(n_done / max(1e-6, time.time() - t_start)),
+                                p50=(float(np.percentile(lat, 50)) if n_done > 5 else 0.0),
+                                frames=idx, drop=float(src.stats.get("drop_rate", 0.0)),
+                                tracks=len(engine.active_ids), alarm=bool(engine.alarm),
+                                alerts=engine.summary().get("alerts", 0))
+                    if ev:
+                        web.add_events(ev)
                 if ev:
                     logger.write(ev, vis if vis is not None else frame)
                     for e in ev:
@@ -218,6 +239,9 @@ def main():
         logger.close()
         if writer:
             writer.release()
+        if web is not None:
+            print("[web] 서버 종료")
+            web.close()
         if args.show:
             cv2.destroyAllWindows()
 
