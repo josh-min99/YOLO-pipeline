@@ -6,6 +6,9 @@ zip 항목은 flat(`/I1_S0_C5_0001011.jpg`), ~1% 손상(BadZipFile) → 손상 �
 
 사용(vast):
     python scripts/extract_images.py --zip-dir <TS_zip들 있는 폴더> --out ../datasets/marine_frames
+
+특정 클립만(예: 보드 번들용 val 13,020장만 → 29GB 대신 ~9GB):
+    python scripts/extract_images.py --zip-dir <...> --out datasets/marine_frames         --clips splits_session_spot/val_clips.txt
 """
 import argparse, zipfile
 from pathlib import Path
@@ -15,7 +18,13 @@ def main():
     ap.add_argument("--zip-dir", required=True, help="TS_*.zip 들이 있는 폴더")
     ap.add_argument("--out", required=True, help="stem.jpg 들을 풀 폴더")
     ap.add_argument("--pattern", default="TS_*.zip")
+    ap.add_argument("--clips", help="이 clip 목록(*_clips.txt)에 있는 프레임만 추출. 없으면 전부")
     args = ap.parse_args()
+
+    clips = None
+    if args.clips:
+        clips = {ln.strip() for ln in Path(args.clips).read_text(encoding="utf-8").splitlines() if ln.strip()}
+        print(f"clip filter: {len(clips)} clips from {args.clips}")
 
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
     zips = sorted(Path(args.zip_dir).glob(args.pattern))
@@ -32,6 +41,8 @@ def main():
             if not name.lower().endswith(".jpg"):
                 continue
             stem = Path(name).stem            # 선행 '/' 및 경로 제거
+            if clips is not None and stem[:-3] not in clips:   # clip = stem[:-3]
+                continue
             dst = out / f"{stem}.jpg"
             if dst.exists():
                 n_ok += 1

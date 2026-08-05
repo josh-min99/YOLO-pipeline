@@ -36,11 +36,29 @@ def sha256(p, chunk=1 << 20):
     return h.hexdigest()
 
 
-def scan_labels(lab_dir):
-    """프레임 수·박스 수·클래스별 인스턴스 — 벤치마크 동일성 지문."""
-    frames = boxes = 0
+def make_resolver(root, split, images_dir):
+    """라벨 stem → 이미지 경로. images_dir 를 주면 평면 폴더(datasets/marine_frames)에서 찾는다.
+
+    이미지가 없는 라벨은 None — 지문도 복사도 **둘 다 이걸 기준으로** 센다.
+    (json_to_yolo --labels-only 는 이미지 없는 프레임의 라벨도 쓰기 때문에
+     라벨만 세면 val 이 13,022 로 나와 기준값 13,020 과 어긋난다.)
+    """
+    base = Path(images_dir) if images_dir else root / "images" / split
+
+    def resolve(stem):
+        p = base / f"{stem}.jpg"
+        return p if p.exists() else None
+    return resolve
+
+
+def scan_labels(lab_dir, resolve):
+    """프레임 수·박스 수·클래스별 인스턴스 — 벤치마크 동일성 지문(이미지 있는 것만)."""
+    frames = boxes = missing = 0
     per_class = {}
     for t in sorted(lab_dir.glob("*.txt")):
+        if resolve(t.stem) is None:
+            missing += 1
+            continue
         frames += 1
         for ln in t.read_text().splitlines():
             p = ln.split()
@@ -48,39 +66,31 @@ def scan_labels(lab_dir):
                 boxes += 1
                 c = int(p[0])
                 per_class[c] = per_class.get(c, 0) + 1
-    return frames, boxes, per_class
+    return frames, boxes, per_class, missing
 
 
-def copy_split(root, out, split, limit=0):
-    """images/<split>, labels/<split> 복사. 심링크는 실체를 따라간다(--link로 만든 데이터셋 대비)."""
-    src_img, src_lab = root / "images" / split, root / "labels" / split
+def copy_split(root, out, split, resolve, limit=0):
+    """images/<split>, labels/<split> 로 복사. 심링크는 실체를 따라간다(--link 데이터셋 대비)."""
     dst_img, dst_lab = out / "images" / split, out / "labels" / split
     dst_img.mkdir(parents=True, exist_ok=True)
     dst_lab.mkdir(parents=True, exist_ok=True)
 
-    labs = sorted(src_lab.glob("*.txt"))
+    labs = sorted((root / "labels" / split).glob("*.txt"))
     if limit:
-        labs = labs[:limit]
-    n_img = n_lab = missing = broken = 0
-    total = 0
+        labs = [t for t in labs if resolve(t.stem)][:limit]
+    n_img = total = 0
     for i, lab in enumerate(labs):
-        img = src_img / (lab.stem + ".jpg")
-        if not img.exists():                      # 깨진 심링크도 여기 걸린다
-            if img.is_symlink():
-                broken += 1
-            else:
-                missing += 1
+        img = resolve(lab.stem)
+        if img is None:
             continue
-        shutil.copy2(img, dst_img / img.name)     # copy2는 심링크를 따라가 실체를 복사
+        dst = dst_img / f"{lab.stem}.jpg"
+        shutil.copy2(img, dst)                    # copy2는 심링크를 따라가 실체를 복사
         shutil.copy2(lab, dst_lab / lab.name)
-        total += (dst_img / img.name).stat().st_size
+        total += dst.stat().st_size
         n_img += 1
-        n_lab += 1
         if (i + 1) % 2000 == 0:
             print(f"  {i+1}/{len(labs)}  ({total/1e9:.2f} GB)", flush=True)
-    if missing or broken:
-        print(f"  [!] 이미지 없음 {missing} / 깨진 심링크 {broken}")
-    return n_img, n_lab, total
+    return n_img, total
 
 
 def main():
@@ -88,6 +98,9 @@ def main():
     ap.add_argument("--root", default="datasets/marine_session_spot",
                     help="YOLO 데이터셋 루트(images/, labels/) — 반드시 spot 홀드아웃")
     ap.add_argument("--split", default="val")
+    ap.add_argument("--images-dir", default="",
+                    help="평면 이미지 폴더(datasets/marine_frames). 주면 root/images/ 대신 여기서 찾는다 "
+                         "— json_to_yolo --labels-only 로 라벨만 만든 경우")
     ap.add_argument("--weights", default="best_spot.pt", help="보드로 옮길 .pt (엔진은 보드에서 빌드)")
     ap.add_argument("--onnx", default="", help="폴백용 ONNX(선택). trtexec 경로에서만 쓴다")
     ap.add_argument("--demo", default="", help="데모 클립(.avi/.mp4) — e2e FPS 측정용")
@@ -106,10 +119,15 @@ def main():
                split=args.split, limit=args.limit, files={}, benchmark={})
 
     # 1) 벤치마크 지문 검사 — 복사 전에 원본부터 본다
+    resolve = make_resolver(root, args.split, args.images_dir)
     print(f"=== 1. 벤치마크 지문 대조 ({root}/labels/{args.split}) ===")
-    frames, boxes, per_class = scan_labels(root / "labels" / args.split)
+    if args.images_dir:
+        print(f"  이미지 출처: {args.images_dir} (평면 폴더)")
+    frames, boxes, per_class, no_img = scan_labels(root / "labels" / args.split, resolve)
     print(f"  frames={frames}  boxes={boxes}  " +
           "  ".join(f"{NAMES.get(c,c)}={per_class.get(c,0)}" for c in sorted(per_class)))
+    if no_img:
+        print(f"  이미지 없는 라벨 {no_img}개 제외 (zip 손상분 2개면 정상)")
     same = (frames == EXPECT["frames"] and boxes == EXPECT["boxes"]
             and all(per_class.get(c, 0) == n for c, n in EXPECT["per_class"].items()))
     if same:
@@ -128,8 +146,8 @@ def main():
         print("\n=== 2. 이미지 복사 건너뜀(--skip-images) ===")
     else:
         print(f"\n=== 2. {args.split} 복사 → {bench} ===")
-        n_img, n_lab, total = copy_split(root, bench, args.split, args.limit)
-        print(f"  이미지 {n_img} / 라벨 {n_lab} / {total/1e9:.2f} GB")
+        n_img, total = copy_split(root, bench, args.split, resolve, args.limit)
+        print(f"  이미지·라벨 {n_img}쌍 / {total/1e9:.2f} GB")
         man["files"]["images"] = dict(count=n_img, bytes=total)
 
     # 3) 가중치 (+ 선택 ONNX)
