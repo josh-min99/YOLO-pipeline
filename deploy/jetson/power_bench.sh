@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # 전력 모드별 × 지속 성능 벤치 (P3). 배포 숫자는 '피크'가 아니라 '열스로틀 후 지속' 값이다.
 # 사용: bash deploy/jetson/power_bench.sh <engine> <imgsz> <frames_dir> [modes...]
-#   예: bash deploy/jetson/power_bench.sh engines/best_736x1280_fp16.engine 736x1280 frames 0 1 2
+#   예: bash deploy/jetson/power_bench.sh engines/best_spot_736x1280_fp16.engine 736x1280 frames 2 1 0
+#
+# 🔴 모드 번호는 보드마다 다르다. Orin Nano Super(JP6.2.1) 실측:
+#      0=15W  1=25W(기본)  2=MAXN_SUPER  3=7W
+#    `sudo nvpmodel -p --verbose` 로 먼저 확인할 것. 구형 문서의 `0=MAXN` 은 여기서 15W다.
 set -e
 ENGINE=${1:?engine 경로}
 IMGSZ=${2:-736x1280}

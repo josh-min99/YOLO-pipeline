@@ -32,7 +32,19 @@ echo -e "\n=== 4. 전력 모드 ==="
 sudo nvpmodel -q 2>/dev/null || echo "  nvpmodel 조회 실패"
 cat <<'EOF'
   측정 규율(P3): 전력 모드별로 따로 잰다. 피크가 아니라 **열스로틀 후 지속 FPS**가 배포 숫자.
-    sudo nvpmodel -m 0       # MAXN
+
+  🔴 모드 번호는 보드마다 다르다. 위 `nvpmodel -q` 출력을 보고 정할 것.
+     Orin Nano Super(JetPack 6.2.1, R36.4.4)에서 실측한 배치:
+       0 = 15W        (GPU 612MHz  / CPU 1497MHz / EMC 2133MHz)
+       1 = 25W        (GPU 918MHz  / CPU 1344MHz / EMC 3199MHz)  ← 출고 기본값
+       2 = MAXN_SUPER (전부 무제한)                              ← 최대 성능은 이것
+       3 = 7W         (4코어, GPU 408MHz)
+     구형 Orin 문서의 `-m 0 = MAXN` 을 그대로 따르면 **15W로 재놓고 MAXN이라고 보고하게 된다.**
+
+  ⚠️ 25W가 15W보다 CPU 클럭이 낮다(1344 < 1497). GPU·메모리에 예산을 몰아준 대신이다.
+     우리 병목은 CPU 전처리라 15W→25W에서 e2e FPS가 안 오를 수 있다 — 오류가 아니라 특성.
+
+    sudo nvpmodel -m 2       # MAXN SUPER
     sudo jetson_clocks       # 클럭 고정(측정 분산 감소)
 EOF
 
