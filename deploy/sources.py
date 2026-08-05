@@ -169,6 +169,37 @@ class LiveSource(FrameSource):
         return s
 
 
+def _scaled_caps(out_w, out_h):
+    """nvvidconv 출력 caps. out_* 를 주면 VIC 가 리사이즈까지 해서 CPU 전처리를 걷어낸다.
+
+    🔴 리사이즈 목표는 '모델 입력 크기'가 아니라 '레터박스 직전 크기'다.
+       예) 1920×1080 → 모델 960×544 인 경우 목표는 **960×540**.
+       960×544 로 직접 늘리면 세로가 0.74% 늘어나(aspect 왜곡) 학습 때 본 것과 다른 픽셀이 된다.
+       960×540 으로 주면 ultralytics LetterBox 가 r=1.0 으로 판단해 리사이즈를 건너뛰고
+       패딩 4줄만 붙인다 — 이게 우리가 원하는 상태다.
+    """
+    if out_w and out_h:
+        return f"video/x-raw,format=BGRx,width={out_w},height={out_h}"
+    return "video/x-raw,format=BGRx"
+
+
+def _usb_pipeline(idx, width, height, fps, fmt="mjpg", out_w=None, out_h=None):
+    """USB(UVC) 웹캠을 HW 경로로. MJPG 는 nvv4l2decoder(전용 디코더)로 푼다.
+
+    fmt='mjpg'  : 카메라가 JPEG 로 보내고 보드가 HW 디코딩 (1080p30 가능, 압축 있음)
+    fmt='yuyv'  : 무압축. 디코딩 불필요하나 USB 대역폭 때문에 1080p 는 보통 5fps
+    """
+    src = f"v4l2src device=/dev/video{idx} io-mode=2"
+    if fmt == "mjpg":
+        head = (f"{src} ! image/jpeg,width={width},height={height},framerate={fps}/1 ! "
+                f"nvv4l2decoder mjpeg=1 ! ")
+    else:
+        head = (f"{src} ! video/x-raw,format=YUY2,width={width},height={height},"
+                f"framerate={fps}/1 ! ")
+    return (head + f"nvvidconv ! {_scaled_caps(out_w, out_h)} ! videoconvert ! "
+            f"video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false")
+
+
 def _csi_pipeline(sensor_id, width, height, fps):
     # Jetson 전용. ISP·리사이즈를 HW(nvarguscamerasrc/nvvidconv)에 맡김.
     return (f"nvarguscamerasrc sensor-id={sensor_id} ! "
@@ -185,8 +216,13 @@ def _rtsp_pipeline(url, latency=100):
 
 
 def open_source(spec, fps=8.0, limit=0, loop=False, width=1920, height=1080,
-                cam_fps=30, gst=None):
-    """spec 문자열 → FrameSource. gst=None 이면 입력원별 기본값(csi/rtsp는 True)."""
+                cam_fps=30, gst=None, pre_w=None, pre_h=None, cam_fmt="mjpg"):
+    """spec 문자열 → FrameSource.
+
+    gst   : None 이면 입력원별 기본값(csi/rtsp는 True, usb는 False=기존 CPU 경로)
+    pre_w/pre_h : 주면 nvvidconv 가 그 크기로 리사이즈(=CPU 전처리 오프로딩). gst 경로에서만 유효
+    cam_fmt : usb 전용. 'mjpg'(HW 디코딩) 또는 'yuyv'(무압축)
+    """
     spec = str(spec)
 
     if spec.startswith("dir:"):
@@ -197,6 +233,13 @@ def open_source(spec, fps=8.0, limit=0, loop=False, width=1920, height=1080,
 
     if spec.startswith("usb:"):
         idx = int(spec.split(":", 1)[1])
+        if gst:
+            pipe = _usb_pipeline(idx, width, height, cam_fps, cam_fmt, pre_w, pre_h)
+            print(f"[usb] gstreamer: {pipe}")
+            cap = cv2.VideoCapture(pipe, cv2.CAP_GSTREAMER)
+            if cap.isOpened():
+                return LiveSource(cap, "usb-gst", limit)
+            print("[usb] gstreamer 파이프라인 실패 → V4L2 폴백(CPU 디코딩·리사이즈)")
         cap = cv2.VideoCapture(idx, cv2.CAP_V4L2 if hasattr(cv2, "CAP_V4L2") else cv2.CAP_ANY)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)

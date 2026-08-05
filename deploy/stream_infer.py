@@ -124,6 +124,15 @@ def main():
     ap.add_argument("--warmup", type=int, default=3,
                     help="통계에서 제외할 초기 프레임 수(TRT 컨텍스트·의존성 자동설치로 첫 프레임이 수초 걸림)")
     ap.add_argument("--src-fps", type=float, default=8.0, help="dir: 소스의 가상 fps")
+    ap.add_argument("--gst", action="store_true",
+                    help="라이브 입력을 GStreamer HW 경로로 (nvv4l2decoder + nvvidconv)")
+    ap.add_argument("--pre-size", default="",
+                    help="nvvidconv 가 리사이즈할 목표 'WxH' (예: 960x540). "
+                         "= CPU 전처리 오프로딩. 🔴 모델 입력이 아니라 **레터박스 직전 크기**를 준다")
+    ap.add_argument("--cam-fmt", default="mjpg", choices=("mjpg", "yuyv"),
+                    help="usb 전용. mjpg=HW 디코딩(압축) / yuyv=무압축")
+    ap.add_argument("--cam-fps", type=int, default=30, help="카메라 요청 fps")
+    ap.add_argument("--cam-size", default="1920x1080", help="카메라 요청 해상도 'WxH'")
     ap.add_argument("--save", default="", help="오버레이 영상 저장 경로(.mp4)")
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--outdir", default="runs/deploy", help="이벤트·스냅샷·리포트")
@@ -146,8 +155,15 @@ def main():
     logger = EventLogger(outdir, save_snapshots=not args.no_snapshots)
     writer = None
 
-    src = open_source(args.source, fps=args.src_fps, limit=args.limit)
-    print(f"[source] {src.kind}  [model] {'STUB' if args.stub else args.model}  imgsz={imgsz}")
+    cw, ch = [int(v) for v in args.cam_size.lower().split("x")]
+    pw = ph = None
+    if args.pre_size:
+        pw, ph = [int(v) for v in args.pre_size.lower().split("x")]
+    src = open_source(args.source, fps=args.src_fps, limit=args.limit,
+                      width=cw, height=ch, cam_fps=args.cam_fps,
+                      gst=args.gst or None, pre_w=pw, pre_h=ph, cam_fmt=args.cam_fmt)
+    print(f"[source] {src.kind}  [model] {'STUB' if args.stub else args.model}  imgsz={imgsz}"
+          + (f"  [HW 전처리] {args.pre_size}" if args.pre_size else ""))
 
     t_infer, t_other, lat = [], [], []
     speeds = []
