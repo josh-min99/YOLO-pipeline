@@ -110,19 +110,28 @@ class LiveSource(FrameSource):
 
     is_live = True
 
-    def __init__(self, cap, kind, limit=0, timeout=10.0):
+    def __init__(self, cap, kind, limit=0, timeout=10.0, direct=False):
+        """direct=True 면 백그라운드 리더 없이 소비자가 직접 읽는다.
+
+        🔴 언제 어느 쪽인가:
+          · 처리가 입력보다 **느리면** 스레드 모드(기본). 최신 프레임만 남겨 지연 누적을 막는다.
+          · 처리가 입력보다 **빠르면** direct 모드. 스레드 모드로 두면 리더와 소비자가 CPU·GIL 을
+            두고 다투면서 오히려 프레임을 흘린다(실측: 29.9 FPS 입력이 25 FPS 로, 드롭 36%).
+        """
         self.cap, self.kind = cap, kind
         if not self.cap.isOpened():
             raise SystemExit(f"{kind} 입력 열기 실패 — 파이프라인/URL/권한 확인")
-        self.limit, self.timeout = limit, timeout
+        self.limit, self.timeout, self.direct = limit, timeout, direct
         self._latest = None          # (grab_ts, frame)
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._read = 0               # 실제로 추론에 넘어간 장수
         self._grabbed = 0            # 카메라에서 읽은 장수
         self._dropped = 0            # 읽었지만 안 쓰고 버린 장수
-        self._t = threading.Thread(target=self._reader, daemon=True)
-        self._t.start()
+        self._t = None
+        if not direct:
+            self._t = threading.Thread(target=self._reader, daemon=True)
+            self._t.start()
 
     def _reader(self):
         while not self._stop.is_set():
@@ -137,6 +146,19 @@ class LiveSource(FrameSource):
                 self._latest = (time.time(), frame)
 
     def __iter__(self):
+        if self.direct:
+            i = 0
+            while True:
+                ok, frame = self.cap.read()
+                if not ok:
+                    break
+                self._grabbed += 1
+                self._read += 1
+                yield i, time.time(), frame
+                i += 1
+                if self.limit and i >= self.limit:
+                    break
+            return
         i = 0
         t_wait = time.time()
         while True:
@@ -158,7 +180,8 @@ class LiveSource(FrameSource):
 
     def close(self):
         self._stop.set()
-        self._t.join(timeout=1.0)
+        if self._t is not None:
+            self._t.join(timeout=1.0)
         self.cap.release()
 
     @property
@@ -265,7 +288,8 @@ def _rtsp_pipeline(url, latency=100):
 
 
 def open_source(spec, fps=8.0, limit=0, loop=False, width=1920, height=1080,
-                cam_fps=30, gst=None, pre_w=None, pre_h=None, cam_fmt="mjpg"):
+                cam_fps=30, gst=None, pre_w=None, pre_h=None, cam_fmt="mjpg",
+                direct=False):
     """spec 문자열 → FrameSource.
 
     gst   : None 이면 입력원별 기본값(csi/rtsp는 True, usb는 False=기존 CPU 경로)
@@ -291,7 +315,7 @@ def open_source(spec, fps=8.0, limit=0, loop=False, width=1920, height=1080,
             ok, fr = cap.read()                 # 첫 프레임으로 실제 동작 확인
             if ok and fr is not None:
                 print(f"[usb] HW 경로 OK — 프레임 {fr.shape[1]}x{fr.shape[0]}")
-                return LiveSource(cap, "usb-gst", limit)
+                return LiveSource(cap, "usb-gst", limit, direct=direct)
             cap.release()
             print("[usb] gstreamer 파이프라인 실패 → V4L2 폴백(CPU 디코딩·리사이즈)")
         cap = cv2.VideoCapture(idx, cv2.CAP_V4L2 if hasattr(cv2, "CAP_V4L2") else cv2.CAP_ANY)
@@ -309,7 +333,7 @@ def open_source(spec, fps=8.0, limit=0, loop=False, width=1920, height=1080,
         print(f"[usb] fourcc={''.join(chr((got >> 8 * i) & 255) for i in range(4))} "
               f"{int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} "
               f"@{cap.get(cv2.CAP_PROP_FPS):.0f}fps (요청 {fourcc} {width}x{height}@{cam_fps})")
-        return LiveSource(cap, "usb", limit)
+        return LiveSource(cap, "usb", limit, direct=direct)
 
     if spec.startswith("csi:"):
         sid = int(spec.split(":", 1)[1])

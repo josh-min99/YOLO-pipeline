@@ -133,6 +133,8 @@ def main():
                     help="usb 전용. mjpg=HW 디코딩(압축) / yuyv=무압축")
     ap.add_argument("--cam-fps", type=int, default=30, help="카메라 요청 fps")
     ap.add_argument("--cam-size", default="1920x1080", help="카메라 요청 해상도 'WxH'")
+    ap.add_argument("--live-direct", action="store_true",
+                    help="라이브 입력을 직접 읽는다(프레임 안 버림). 처리가 입력보다 빠를 때 쓴다")
     ap.add_argument("--save", default="", help="오버레이 영상 저장 경로(.mp4)")
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--outdir", default="runs/deploy", help="이벤트·스냅샷·리포트")
@@ -161,7 +163,8 @@ def main():
         pw, ph = [int(v) for v in args.pre_size.lower().split("x")]
     src = open_source(args.source, fps=args.src_fps, limit=args.limit,
                       width=cw, height=ch, cam_fps=args.cam_fps,
-                      gst=args.gst or None, pre_w=pw, pre_h=ph, cam_fmt=args.cam_fmt)
+                      gst=args.gst or None, pre_w=pw, pre_h=ph, cam_fmt=args.cam_fmt,
+                      direct=args.live_direct)
     print(f"[source] {src.kind}  [model] {'STUB' if args.stub else args.model}  imgsz={imgsz}"
           + (f"  [HW 전처리] {args.pre_size}" if args.pre_size else ""))
 
