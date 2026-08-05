@@ -175,22 +175,32 @@ def main():
                                     bytes=Path(args.demo).stat().st_size)
         print(f"  데모 {Path(args.demo).name}")
 
-    # 4) 보드용 data yaml + 경로 고정 스크립트
-    #    ultralytics 는 상대 path 를 yaml 위치가 아니라 DATASETS_DIR 기준으로 푼다 → 절대경로로 박아야 한다.
+    # 4) 보드용 data yaml
+    #    ultralytics 는 상대 path 를 yaml 위치가 아니라 DATASETS_DIR 기준으로 푼다 → 절대경로여야 한다.
+    #    🔴 그 절대경로는 **평가가 실제로 도는 곳** 기준이다. 우리는 컨테이너 안에서 돌리고
+    #       (docker run -v $HOME/bundle:/bundle) 호스트 경로를 박으면 컨테이너에서 못 찾는다.
+    #       처음엔 setup_bundle.sh 가 호스트 경로로 덮어쓰게 만들었는데, 그게 정확히 그 버그였다.
+    #       → 컨테이너 마운트 경로를 기본값으로 박는다. 호스트에서 직접 돌릴 때만 바꾸면 된다.
     (out / "marine_board.yaml").write_text(
-        "# 보드용 data config — path 는 setup_bundle.sh 가 실제 위치로 덮어쓴다.\n"
-        f"path: __BUNDLE__/benchmark/marine_session_spot\n"
+        "# 보드용 data config.\n"
+        "# path 는 **평가가 도는 환경** 기준의 절대경로다. 기본값은 컨테이너 마운트 위치:\n"
+        "#   docker run -v $HOME/bundle:/bundle ...   → /bundle\n"
+        "# 컨테이너 없이 호스트에서 돌린다면 setup_bundle.sh 를 실행해 호스트 경로로 바꿀 것.\n"
+        "path: /bundle/benchmark/marine_session_spot\n"
         "train: images/val   # 보드에선 학습 안 함(자리만 채움)\n"
         f"val: images/{args.split}\n\nnames:\n"
         + "".join(f"  {c}: {n}\n" for c, n in NAMES.items()), encoding="utf-8")
     (out / "setup_bundle.sh").write_text(
         "#!/usr/bin/env bash\n"
-        "# 번들을 푼 위치로 data yaml 의 path 를 고정한다. 보드에서 제일 먼저 1회 실행.\n"
+        "# data yaml 의 path 를 **호스트 경로**로 바꾼다.\n"
+        "# 컨테이너(-v $HOME/bundle:/bundle) 안에서 돌린다면 실행할 필요 없다 — 기본값이 이미 /bundle 이다.\n"
+        "# 컨테이너 없이 호스트 파이썬으로 평가할 때만 쓴다.\n"
         "set -e\n"
         'HERE="$(cd "$(dirname "$0")" && pwd)"\n'
         'sed -i "s|^path:.*|path: $HERE/benchmark/marine_session_spot|" "$HERE/marine_board.yaml"\n'
         'grep "^path:" "$HERE/marine_board.yaml"\n'
-        'echo "OK - 다음: RUN_ON_BOARD.md"\n', encoding="utf-8")
+        'echo "OK - path 를 호스트 기준으로 바꿨다. 컨테이너에서 돌릴 거면 /bundle 로 되돌릴 것."\n',
+        encoding="utf-8")
     (out / "MANIFEST.json").write_text(json.dumps(man, ensure_ascii=False, indent=2),
                                        encoding="utf-8")
     (out / "RUN_ON_BOARD.md").write_text(board_readme(args, man), encoding="utf-8")

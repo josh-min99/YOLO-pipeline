@@ -11,6 +11,8 @@
 # 축이 두 개인 이유(§15-6): ultralytics val() 은 rect(imgsz=[h,w])를 못 받는다.
 #   · mAP   축 = 정사각 1280  (DATASET.md §6-2 벤치마크 규약, 기준 0.9788)
 #   · 운영점 축 = rect 736x1280 (실제 배포 설정, 기준 recall@0.6 0.9755 / 오경보 2.12%)
+# 🔴 컨테이너에서 돌릴 것: docker run --shm-size=2g -v $HOME/bundle:/bundle ...
+#    --shm-size 를 빼면 도커 기본 /dev/shm 64MB 로는 PyTorch 데이터로더가 죽는다.
 set -u
 W=/bundle/weights/best_spot.pt
 ROOT=/bundle/benchmark/marine_session_spot
