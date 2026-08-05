@@ -62,7 +62,7 @@ python deploy/stream_infer.py --source dir:datasets/marine_frames:I2_S0_C5_0079 
 python deploy/make_board_bundle.py --root datasets/marine_session_spot \
     --weights best_spot.pt --demo demo_I2_S0_C5_0079_in.avi --out /media/usb/jetson_bundle
 ```
-가중치 + **VLM·MA-PDM 비교에 쓴 그 벤치마크**(spot val 13,020장) + 데모 + `RUN_ON_BOARD.md`가 한 폴더로 나온다.
+가중치 + **x86 P1과 동일한 벤치마크**(spot val 13,020장) + 데모 + `RUN_ON_BOARD.md`가 한 폴더로 나온다.
 복사 전에 `frames=13020 / boxes=14272 / 어선7919·상선1910·군함4443`을 대조하므로, 분할이 어긋나면 그 자리에서 잡힌다.
 
 ### 1) 보드에서
@@ -88,6 +88,6 @@ bash deploy/jetson/power_bench.sh engines/best_spot_736x1280_fp16.engine 736x128
 - `results/deploy/bench_*.csv`, `results/deploy/parity_*.csv` — 표에 그대로 들어가는 숫자
 
 ## 잊기 쉬운 것 3가지
-1. **엔진 이식 불가** — 아키텍처·TRT 버전 종속. ONNX만 옮긴다.
+1. **엔진 이식 불가** — 아키텍처·TRT 버전 종속. 보드로는 **`.pt`** 를 옮겨 거기서 빌드한다(ONNX는 ultralytics export가 거부, §15-8).
 2. **INT8 캘리브레이션은 train 스플릿으로** — ultralytics 기본값은 `data:` yaml의 val이라 그대로 쓰면 평가셋 누수. `export_trt.py`가 임시 yaml로 우회함.
 3. **conf=0.6 val의 mAP는 잘린 값** — 표준 mAP(conf 0.001)와 운영점 P/R을 열로 분리해 보고.

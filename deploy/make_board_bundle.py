@@ -8,9 +8,10 @@
   python deploy/make_board_bundle.py --root ... --out ... --limit 200
 
 왜 이 스크립트인가:
-  VLM·MA-PDM·YOLO를 같은 축에서 비교한 벤치마크가 `splits_session_spot` val 13,020장이다.
-  보드에서 다른 val을 쓰면 그 비교선이 끊긴다. 그래서 이 스크립트는 복사만 하는 게 아니라
-  **DATASET.md §6-1의 지문(프레임·박스·클래스 수)을 대조**해서 다르면 경고한다.
+  이번 단계의 비교는 **x86(P1) vs 보드**다. 같은 val이어야 "TRT FP16 손실 0"이나 "recall 0.9755"가
+  보드 숫자와 같은 축에 놓인다. 보드에서 다른 val을 쓰면 그 기준선이 끊긴다.
+  그래서 이 스크립트는 복사만 하는 게 아니라 **DATASET.md §6-1의 지문(프레임·박스·클래스 수)을
+  대조**해서 다르면 경고한다. (기준 val = `splits_session_spot` 13,020장, 새 장소 홀드아웃)
 
 🔴 엔진(.engine)은 넣지 않는다 — 아키텍처·TRT 버전 종속이라 보드에서 재빌드해야 한다(§15-1).
 🔴 .pt 를 넣는다 — ONNX는 ultralytics로 재빌드가 안 된다(export_trt.py 함정 1-b).
@@ -112,12 +113,12 @@ def main():
     same = (frames == EXPECT["frames"] and boxes == EXPECT["boxes"]
             and all(per_class.get(c, 0) == n for c, n in EXPECT["per_class"].items()))
     if same:
-        print("  OK - VLM/MA-PDM 비교에 쓴 그 벤치마크와 동일")
+        print("  OK - x86(P1) 기준선과 동일한 벤치마크")
     else:
         exp = ", ".join(f"{NAMES[c]}={n}" for c, n in EXPECT["per_class"].items())
         print(f"  [!] 다름 - 기대값 frames={EXPECT['frames']} boxes={EXPECT['boxes']} ({exp})")
         print("  [!] 분할을 재생성했거나 이미지 손실이 다르다. 이 상태로 낸 숫자는 "
-              "기존 0.979/0.9755 와 직접 비교 불가(DATASET.md §6-1).")
+              "x86 기준선 0.9788/0.9755 와 직접 비교 불가(DATASET.md §6-1).")
     man["benchmark"] = dict(frames=frames, boxes=boxes,
                             per_class={NAMES.get(c, str(c)): n for c, n in sorted(per_class.items())},
                             matches_reference=same, reference=EXPECT["frames"])
@@ -220,7 +221,7 @@ python3 deploy/export_trt.py --best /bundle/weights/{w} --imgsz 1280     --forma
 왜 둘 다: ultralytics `val()` 이 rect(imgsz=[h,w])를 지원하지 않아서(§15-6),
 **mAP 축은 정사각 엔진**으로, **운영점·속도는 rect 엔진**으로 잰다.
 
-## 3. 정확도 — VLM·MA-PDM 과 같은 축
+## 3. 정확도 — x86 기준선과 같은 축
 ```bash
 # A) 표준 mAP (DATASET.md §6-2: imgsz 1280, conf 0.001 기본값)  → 기준 군함 mAP50 0.9788
 yolo detect val model=engines/{Path(w).stem}_1280_fp16.engine \\
