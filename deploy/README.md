@@ -9,9 +9,11 @@
 | `sources.py` | 입력원 추상화: 파일 / 프레임폴더 / USB / CSI / RTSP | 공통 |
 | `alert.py` | N-of-M 히스테리시스 경보 + 이벤트 JSONL·스냅샷 | 공통 |
 | `stream_infer.py` | **실행 엔트리**: 입력→추론→추적→경보→오버레이·리포트 | 공통 |
-| `export_trt.py` | `.pt` → ONNX / TRT FP16 / TRT INT8 | x86(탐색) + 보드(최종) |
+| `export_trt.py` | `.pt` → ONNX / TRT FP16 / TRT INT8 (ONNX만 있으면 trtexec 폴백) | x86(탐색) + 보드(최종) |
 | `bench_engine.py` | 지연 p50/p95·FPS·**상대 연산비** CSV | x86 + 보드 |
 | `eval_engine.py` | 엔진별 **정확도 패리티 표**(군함 mAP·운영점 P/R·오경보율) | x86 + 보드 |
+| `eval_op.py` | 운영점 지표(recall@conf·오경보율)를 `predict`로 직접 — **rect 엔진은 이것만 됨** | x86 + 보드 |
+| `make_board_bundle.py` | USB 이전 번들(가중치 + 동일 벤치마크 + 데모 + 실행지침) 생성 | 데이터 있는 호스트 |
 | `jetson/setup.sh` | 보드 환경 점검(JetPack·TRT·jtop·전력모드) | 보드 |
 | `jetson/power_bench.sh` | 전력모드별 × 열스로틀 후 지속 성능 | 보드 |
 
@@ -53,13 +55,32 @@ python deploy/stream_infer.py --source dir:datasets/marine_frames:I2_S0_C5_0079 
 합격선(제안): 군함 mAP50 손실 **FP16 ≤1%p / INT8 ≤2%p**, **군함 recall@conf0.6 ≥ 0.95**, 빈프레임 오경보 ≤0.5%.
 → 통과한 설정 중 상대 연산비가 가장 낮은 것이 배포 설정.
 
-## P3 — 보드
+## P3 — 보드 (Jetson Orin Nano Super)
+
+### 0) 옮길 것 만들기 — 데이터셋이 있는 호스트에서
 ```bash
-bash deploy/jetson/setup.sh                      # 환경 점검 (컨테이너 권장 안내 포함)
-# 🔴 x86에서 만든 .engine 은 안 돈다. ONNX만 복사해 와서 보드에서 재빌드:
-python3 deploy/export_trt.py --best best.onnx --imgsz 736,1280 --formats fp16,int8
-bash deploy/jetson/power_bench.sh engines/best_736x1280_fp16.engine 736x1280 <프레임폴더> 0 1 2
+python deploy/make_board_bundle.py --root datasets/marine_session_spot \
+    --weights best_spot.pt --demo demo_I2_S0_C5_0079_in.avi --out /media/usb/jetson_bundle
 ```
+가중치 + **VLM·MA-PDM 비교에 쓴 그 벤치마크**(spot val 13,020장) + 데모 + `RUN_ON_BOARD.md`가 한 폴더로 나온다.
+복사 전에 `frames=13020 / boxes=14272 / 어선7919·상선1910·군함4443`을 대조하므로, 분할이 어긋나면 그 자리에서 잡힌다.
+
+### 1) 보드에서
+```bash
+bash setup_bundle.sh                             # 번들 위치로 data yaml path 고정 (1회)
+bash deploy/jetson/setup.sh                      # 환경 점검 (컨테이너 권장 안내 포함)
+
+# 🔴 x86에서 만든 .engine 은 안 돈다 → 보드에서 재빌드. **.pt 에서** 빌드할 것:
+python3 deploy/export_trt.py --best /bundle/weights/best_spot.pt --imgsz 736,1280 --formats fp16
+python3 deploy/export_trt.py --best /bundle/weights/best_spot.pt --imgsz 1280     --formats fp16
+bash deploy/jetson/power_bench.sh engines/best_spot_736x1280_fp16.engine 736x1280 <프레임폴더> 0 1 2
+```
+> **왜 ONNX가 아니라 .pt인가:** ultralytics `Model.export()`는 첫 줄에서 `_check_is_pytorch_model()`을 호출해
+> `.onnx`를 넣으면 `TypeError`로 죽는다. ONNX밖에 없으면 `export_trt.py`가 `trtexec`으로 우회하지만,
+> 그렇게 만든 엔진엔 클래스명 메타데이터가 없어 라벨이 `class0/1/2`로 뜬다.
+>
+> **엔진을 두 개 만드는 이유:** `val()`이 rect를 지원하지 않아(§15-6) **mAP 축은 정사각(1280)**,
+> **운영점·속도는 rect(736×1280)** 로 나눠 잰다.
 
 ## 산출물
 - `runs/deploy/events.jsonl` — 경보 이벤트(+`*.jpg` 스냅샷)

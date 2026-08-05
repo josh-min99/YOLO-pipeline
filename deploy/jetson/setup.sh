@@ -53,13 +53,22 @@ JetPack 6.x 기준, GPU torch+ultralytics+TRT가 이미 맞춰진 컨테이너�
     -v $(pwd):/work -w /work \
     ultralytics/ultralytics:latest-jetson-jetpack6
 
-컨테이너 안에서:
-  python3 deploy/export_trt.py --best best.onnx --imgsz 736,1280 --formats fp16,int8   # 엔진은 여기서 빌드
-  python3 deploy/bench_engine.py --weights engines/best_736x1280_fp16.engine --imgsz-list 736x1280 --frames <프레임폴더>
-  python3 deploy/stream_infer.py --source rtsp://... --model engines/best_736x1280_fp16.engine
+컨테이너 안에서 (🔴 .onnx 가 아니라 **.pt** 에서 빌드한다 — ONNX는 ultralytics export가 거부한다):
+  python3 deploy/export_trt.py --best best_spot.pt --imgsz 736,1280 --formats fp16   # 엔진은 여기서 빌드
+  python3 deploy/bench_engine.py --weights engines/best_spot_736x1280_fp16.engine --imgsz-list 736x1280 --frames <프레임폴더>
+  python3 deploy/stream_infer.py --source rtsp://... --model engines/best_spot_736x1280_fp16.engine
 
-엔진만 빠르게 만들려면 trtexec 직접도 가능:
+ONNX밖에 없을 때만(폴백) — 클래스명 메타데이터 없는 엔진이 나온다:
   /usr/src/tensorrt/bin/trtexec --onnx=best.onnx --saveEngine=best_fp16.engine --fp16 \
-      --shapes=images:1x3x736x1280 --workspace=4096
+      --shapes=images:1x3x736x1280 --memPoolSize=workspace:2048
+  (export_trt.py 에 .onnx 를 주면 위 명령을 대신 실행해준다)
 EOF
+
+echo -e "\n=== 6. 비디오 인코더/디코더 (오버레이 저장 비용 판단용) ==="
+if command -v gst-inspect-1.0 >/dev/null; then
+  gst-inspect-1.0 2>/dev/null | grep -E "nvv4l2decoder|nvv4l2h264enc|nvvidconv" || \
+    echo "  nvv4l2h264enc 없음 = HW 인코더 없음(Orin Nano) → mp4 저장은 CPU. FPS 측정 시 --save 끄기"
+else
+  echo "  gst-inspect-1.0 없음 — HW 인코더 유무는 mp4 저장 시 CPU 사용률로 판단"
+fi
 echo -e "\n점검 끝."
