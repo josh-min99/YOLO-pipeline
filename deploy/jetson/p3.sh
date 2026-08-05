@@ -57,13 +57,20 @@ if [ "$MODE" != "quick" ]; then
       --imgsz 736x1280 --data-root "$ROOT" --conf 0.6 --csv "$OUT/op_jetson.csv"
 fi
 
+step "4b. 트래커 의존성 선설치 (lap)"
+# ultralytics 가 e2e 실행 '도중에' lap 을 자동설치하면 그 수 초가 평균에 그대로 들어간다(§15-6).
+# 컨테이너가 --rm 이라 매 실행마다 재발하므로 여기서 먼저 깐다.
+pip install -q lap 2>&1 | tail -1 || true
+
 step "5. 속도 — 지연 p50/p95 (x86 기준: infer 2.25ms)"
 python3 deploy/bench_engine.py --weights engines/best_spot_736x1280_fp16.engine \
     --imgsz-list 736x1280 --frames "$FRAMES" --n 200 --out "$OUT"
 
 step "6. end-to-end 헤드리스 (x86 기준: p50 9.43ms / ~106 FPS)"
-DEMO=$(ls /bundle/demo/* 2>/dev/null | head -1)
-python3 deploy/stream_infer.py --source "$DEMO" \
+# 🔴 demo_*.avi(MJPG 재인코딩)로 재면 안 된다 — 압축 손실이 군함 0.907 을 상선 0.547 로
+#    뒤집어서 경보가 0건이 된다(§15-12). x86 과 같은 축으로 재려면 원본 프레임 폴더를 쓴다.
+CLIP=${CLIP:-I2_S0_C5_0079}
+python3 deploy/stream_infer.py --source "dir:$FRAMES:$CLIP" \
     --model engines/best_spot_736x1280_fp16.engine --imgsz 736,1280 \
     --conf 0.25 --alert-conf 0.6 --n 6 --m 10 --outdir runs/deploy --no-snapshots
 
