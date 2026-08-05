@@ -139,8 +139,10 @@ def main():
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--web", type=int, default=0,
                     help="웹 모니터링 뷰 포트(예: 8080). 브라우저에서 http://<보드IP>:포트")
-    ap.add_argument("--web-quality", type=int, default=70, help="웹 뷰 JPEG 품질")
-    ap.add_argument("--web-width", type=int, default=1280, help="웹 뷰 최대 폭(전송량 절감)")
+    ap.add_argument("--web-quality", type=int, default=60, help="웹 뷰 JPEG 품질")
+    ap.add_argument("--web-width", type=int, default=960, help="웹 뷰 최대 폭(전송량 절감)")
+    ap.add_argument("--web-fps", type=int, default=12,
+                    help="웹 스트림 전송률 상한. 높이면 지연이 쌓인다(추론 FPS와 무관)")
     ap.add_argument("--outdir", default="runs/deploy", help="이벤트·스냅샷·리포트")
     ap.add_argument("--no-snapshots", action="store_true")
     ap.add_argument("--tag", default="", help="리포트 파일 이름에 붙일 식별자")
@@ -164,6 +166,7 @@ def main():
     if args.web:
         from webview import WebView
         web = WebView(args.web, quality=args.web_quality, max_width=args.web_width,
+                      stream_fps=args.web_fps,
                       source=f"{args.source}  ·  {Path(str(args.model)).name}  ·  imgsz={imgsz}")
 
     cw, ch = [int(v) for v in args.cam_size.lower().split("x")]

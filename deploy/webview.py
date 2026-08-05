@@ -12,6 +12,7 @@
    (Orin Nano 에는 HW 인코더가 없어서 JPEG 인코딩도 CPU 다 — 추론 루프에 넣으면 안 된다.)
 """
 import json
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -97,8 +98,9 @@ class _State:
 
 class _Handler(BaseHTTPRequestHandler):
     state = None
-    jpeg_quality = 70
-    max_width = 1280
+    jpeg_quality = 60
+    max_width = 960
+    stream_fps = 12
 
     def log_message(self, *a):
         pass                                   # 접속 로그로 콘솔을 더럽히지 않는다
@@ -124,19 +126,35 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _stream(self):
+        # 🔴 지연이 쌓이지 않게 하는 것이 이 함수의 전부다.
+        #    30 FPS 를 그대로 밀면 브라우저 디코딩이 조금만 느려도 TCP 버퍼에 프레임이
+        #    누적되고, 그게 눈에 보이는 랙이 된다(보드는 멀쩡한데 화면만 늦는 상태).
+        #    → ① 전송률을 제한하고 ② 그 사이 프레임은 **버린다**(항상 최신만 보낸다).
+        #    감시 화면에 30 FPS 는 필요 없다.
+        try:
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
         self.send_response(200)
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=f")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         last = -1
+        period = 1.0 / max(1, self.stream_fps)
+        next_at = 0.0
         try:
             while True:
+                now = time.time()
+                if now < next_at:
+                    time.sleep(min(0.005, next_at - now))
+                    continue
                 with self.state.lock:
                     fr, seq = self.state.frame, self.state.seq
                 if fr is None or seq == last:
                     time.sleep(0.005)          # 새 프레임이 없으면 다시 보내지 않는다
                     continue
                 last = seq
+                next_at = now + period
                 if fr.shape[1] > self.max_width:      # 전송량 줄이기(추론과 무관)
                     s = self.max_width / fr.shape[1]
                     fr = cv2.resize(fr, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
@@ -154,16 +172,17 @@ class _Handler(BaseHTTPRequestHandler):
 class WebView:
     """추론 루프에서 publish() 만 호출하면 된다. 인코딩은 브라우저 스레드가 한다."""
 
-    def __init__(self, port=8080, quality=70, max_width=1280, source=""):
+    def __init__(self, port=8080, quality=60, max_width=960, stream_fps=12, source=""):
         self.state = _State()
         self.state.status["source"] = source
         _Handler.state = self.state
         _Handler.jpeg_quality = quality
         _Handler.max_width = max_width
+        _Handler.stream_fps = stream_fps
         self.srv = ThreadingHTTPServer(("0.0.0.0", port), _Handler)
         self.srv.daemon_threads = True
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
-        print(f"[web] http://<보드IP>:{port}  (같은 네트워크의 브라우저에서 접속)")
+        print(f"[web] http://<보드IP>:{port}  (스트림 {stream_fps} FPS / 폭 {max_width} / 품질 {quality})")
 
     def publish(self, frame, **status):
         """프레임 참조만 교체하고 즉시 반환 — 추론 루프를 막지 않는다."""
