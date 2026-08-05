@@ -241,10 +241,20 @@ def open_source(spec, fps=8.0, limit=0, loop=False, width=1920, height=1080,
                 return LiveSource(cap, "usb-gst", limit)
             print("[usb] gstreamer 파이프라인 실패 → V4L2 폴백(CPU 디코딩·리사이즈)")
         cap = cv2.VideoCapture(idx, cv2.CAP_V4L2 if hasattr(cv2, "CAP_V4L2") else cv2.CAP_ANY)
+        # 🔴 FOURCC 를 먼저, 그리고 반드시 지정한다.
+        #    지정하지 않으면 V4L2 가 기본 포맷 YUYV(무압축)를 고르는데, 1080p 는 프레임당 ~4MB라
+        #    USB 대역폭에 막혀 **5 FPS**밖에 안 나온다. 카메라 성능이 아니라 포맷 선택 문제다.
+        #    (C920 실측: YUYV 1080p ≈ 5 FPS / MJPG 1080p ≈ 29.9 FPS)
+        fourcc = "MJPG" if cam_fmt == "mjpg" else "YUYV"
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         cap.set(cv2.CAP_PROP_FPS, cam_fps)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # 지연 누적 방지
+        got = int(cap.get(cv2.CAP_PROP_FOURCC))
+        print(f"[usb] fourcc={''.join(chr((got >> 8 * i) & 255) for i in range(4))} "
+              f"{int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} "
+              f"@{cap.get(cv2.CAP_PROP_FPS):.0f}fps (요청 {fourcc} {width}x{height}@{cam_fps})")
         return LiveSource(cap, "usb", limit)
 
     if spec.startswith("csi:"):
