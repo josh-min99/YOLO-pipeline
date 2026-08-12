@@ -37,7 +37,10 @@ else
   # 🔴 경고로 끝내지 않는다. 안 걸린 채로 돌면 조용히 절반 속도(26 FPS)로 동작하고,
   #    현장에서는 그걸 알아챌 방법이 없다(§15-20). 재부팅하면 매번 풀린다.
   echo "  클럭    ⚠️  $((G/1000000))/$((GM/1000000)) MHz — 최대가 아니다. 고정 시도:"
-  sudo jetson_clocks 2>/dev/null
+  echo "          (비밀번호를 물으면 입력할 것. ssh 로는 실패할 수 있다)"
+  # 🔴 stderr 를 버리지 않는다 — sudo 의 비밀번호 프롬프트가 stderr 로 나가므로,
+  #    묻어버리면 화면엔 아무것도 없는데 입력을 기다리는 '멈춘 것처럼 보이는' 상태가 된다.
+  sudo jetson_clocks
   G=$(cat /sys/devices/platform/17000000.gpu/devfreq_dev/cur_freq 2>/dev/null || echo 0)
   if [ "$G" = "$GM" ]; then echo "          → OK ($((G/1000000)) MHz 고정됨)"
   else echo "          → ❌ 실패. 터미널에서 'sudo jetson_clocks' 실행 후 다시 시작할 것"; fail=1; fi
