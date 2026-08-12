@@ -13,13 +13,25 @@
 # 유지되는 것: GStreamer + NVIDIA 플러그인(nvv4l2decoder/nvvidconv), TensorRT, torch.
 FROM ultralytics/ultralytics:latest-jetson-jetpack6
 
+# 3. OpenCV 의 Qt 플러그인이 요구하는 X11 라이브러리. 헤드리스 이미지라 빠져 있고,
+#    없으면 "Could not load the Qt platform plugin xcb" 로 죽는다 — 이름만 봐서는
+#    Qt/DISPLAY 문제로 보이지만 실체는 libICE.so.6 / libSM.so.6 부재다.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libice6 libsm6 libxext6 libxrender1 libxkbcommon-x11-0 \
+ && rm -rf /var/lib/apt/lists/*
+
 # headless 를 먼저 지우지 않으면 두 패키지가 같은 cv2 를 놓고 충돌한다.
 RUN pip uninstall -y opencv-python-headless opencv-contrib-python-headless 2>/dev/null || true \
- && pip install --no-cache-dir opencv-python lap \
- && python3 -c "import cv2, lap; \
+ && pip install --no-cache-dir opencv-python lap
+
+# 실행 시점이 아니라 빌드 시점에 검증한다 — GUI 지원과 플러그인 의존성 둘 다.
+RUN python3 -c "import cv2, lap; \
     info = cv2.getBuildInformation(); \
     gui = [l for l in info.split(chr(10)) if 'GUI:' in l]; \
     print('cv2', cv2.__version__, gui[0].strip() if gui else 'GUI 정보 없음'); \
-    assert 'NONE' not in (gui[0] if gui else 'NONE'), 'GUI 없는 OpenCV — 빌드 실패'"
+    assert 'NONE' not in (gui[0] if gui else 'NONE'), 'GUI 없는 OpenCV — 빌드 실패'" \
+ && P=$(python3 -c "import cv2, os; print(os.path.dirname(cv2.__file__))")/qt/plugins/platforms/libqxcb.so \
+ && ldd "$P" | grep "not found" && { echo "🔴 xcb 플러그인 의존성 미해결 — 위 라이브러리를 apt 로 추가할 것"; exit 1; } \
+ || echo "xcb 플러그인 의존성 OK"
 
 WORKDIR /bundle/YOLO-pipeline
