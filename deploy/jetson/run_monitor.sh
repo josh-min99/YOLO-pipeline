@@ -3,9 +3,10 @@
 #
 #   bash deploy/jetson/run_monitor.sh            # 배포 설정 그대로
 #   FPS_ONLY=1 bash deploy/jetson/run_monitor.sh # 표시 없이 FPS 만 (비교용)
+#   REC=1 bash deploy/jetson/run_monitor.sh      # 영상까지 기록 (현장 채증용)
 #
-# 🔴 보드 앞에서 한 번만: xhost +local:docker
-#    (컨테이너가 보드의 X 화면에 그리려면 접근 허가가 필요하다. 재부팅하면 다시 해야 한다.)
+# 사전 준비는 스크립트가 알아서 한다 — 클럭 고정(jetson_clocks), 화면 권한(xhost),
+# 카메라·엔진·이미지 확인. 하나라도 어긋나면 실행하지 않고 무엇을 해야 하는지 알려준다.
 #
 # 배포 설정 근거는 W10_주간증강_결과정리.md §8.
 #   모델 best_spot(실데이터만) · 544×960 rect · TRT FP16 · conf 0.25 · N-of-M(10중 6)
@@ -32,7 +33,15 @@ echo "=== 사전 점검 ==="
 G=$(cat /sys/devices/platform/17000000.gpu/devfreq_dev/cur_freq 2>/dev/null || echo 0)
 GM=$(cat /sys/devices/platform/17000000.gpu/devfreq_dev/max_freq 2>/dev/null || echo 1)
 if [ "$G" = "$GM" ]; then echo "  클럭    OK ($((G/1000000)) MHz 고정)"
-else echo "  클럭    ⚠️  $((G/1000000))/$((GM/1000000)) MHz — 'sudo jetson_clocks' 권장(§15-20)"; fi
+else
+  # 🔴 경고로 끝내지 않는다. 안 걸린 채로 돌면 조용히 절반 속도(26 FPS)로 동작하고,
+  #    현장에서는 그걸 알아챌 방법이 없다(§15-20). 재부팅하면 매번 풀린다.
+  echo "  클럭    ⚠️  $((G/1000000))/$((GM/1000000)) MHz — 최대가 아니다. 고정 시도:"
+  sudo jetson_clocks 2>/dev/null
+  G=$(cat /sys/devices/platform/17000000.gpu/devfreq_dev/cur_freq 2>/dev/null || echo 0)
+  if [ "$G" = "$GM" ]; then echo "          → OK ($((G/1000000)) MHz 고정됨)"
+  else echo "          → ❌ 실패. 터미널에서 'sudo jetson_clocks' 실행 후 다시 시작할 것"; fail=1; fi
+fi
 
 P=$(nvpmodel -q 2>/dev/null | head -1)
 echo "  전력    ${P:-조회 실패}"
@@ -46,6 +55,12 @@ else echo "  엔진    ❌ $MODEL 없음 — deploy/export_trt.py 로 빌드"; f
 if [ -z "${FPS_ONLY:-}" ]; then
   if [ -S /tmp/.X11-unix/X0 ]; then echo "  디스플레이 OK (:0)"
   else echo "  디스플레이 ❌ /tmp/.X11-unix/X0 없음 — 모니터가 연결된 세션에서 실행할 것"; fail=1; fi
+  # 컨테이너가 보드 화면에 그릴 권한. 재부팅하면 풀리므로 매번 걸어둔다(로컬 접속만 허용).
+  if xhost 2>/dev/null | grep -q "^LOCAL:"; then echo "  화면권한 OK (LOCAL 허용됨)"
+  else
+    if xhost +local:docker >/dev/null 2>&1; then echo "  화면권한 OK (방금 허용함)"
+    else echo "  화면권한 ⚠️  xhost 실패 — 원격(ssh)이면 정상. 보드 터미널에서 'xhost +local:docker'"; fi
+  fi
 fi
 
 if ! docker image inspect "$IMG" >/dev/null 2>&1; then
@@ -70,7 +85,19 @@ if [ -n "${FPS_ONLY:-}" ]; then
     python3 deploy/stream_infer.py $COMMON --limit 300 --no-snapshots
 fi
 
+# 현장 기록 — REC=1 로 켠다.
+# 🔴 Orin Nano 에는 NVENC 가 없어 인코딩이 전부 CPU 다(§15-16). 비용은 **미측정** —
+#    현장에서 켤 거면 FPS 표시를 보면서 판단할 것. 경보 스냅샷은 켜든 끄든 남는다.
+SAVE=""
+if [ -n "${REC:-}" ]; then
+  SAVE="--save $OUTDIR/rec_$(date +%m%d_%H%M).mp4"
+  echo "🔴 영상 기록 켬 — CPU 인코딩이라 FPS 가 떨어질 수 있다(미측정)"
+fi
+
 echo -e "\n=== 모니터 표시로 실행 (창에서 q 로 종료) ===\n"
+echo "  이벤트 로그 : ~/bundle/YOLO-pipeline/$OUTDIR/events.jsonl"
+echo "  경보 스냅샷 : ~/bundle/YOLO-pipeline/$OUTDIR/  (경보 발생 시 자동 저장)"
+echo
 # -t 는 붙이지 않는다 — nohup/백그라운드로 띄우면 TTY 가 없어
 # "the input device is not a TTY" 로 죽는다. 표시에는 TTY 가 필요 없다(X11 소켓만 있으면 된다).
 # 창 종료는 q 키, 원격 종료는 docker stop.
