@@ -19,7 +19,9 @@ CONF=${CONF:-0.25}           # 확정 운용점 (conf 스윕 결과, W10 §8)
 ALERT_CONF=${ALERT_CONF:-0.25}   # 경보 임계도 같은 값 — 측정한 recall 과 경보 동작을 일치시킨다
 N=${N:-6}; M=${M:-10}        # N-of-M: 최근 10프레임 중 6프레임 이상 → 경보 ON
 OUTDIR=${OUTDIR:-runs/deploy_live}
-IMG=ultralytics/ultralytics:latest-jetson-jetpack6
+# 배포 이미지(GUI OpenCV + lap 이 구워져 있음). 없으면 기본 이미지로 폴백하되
+# 그 경우 --show 는 동작하지 않는다(headless OpenCV).
+IMG=${IMG:-marine-detect:jetson}
 
 cd "$HOME/bundle/YOLO-pipeline" || { echo "repo 없음"; exit 1; }
 
@@ -46,6 +48,14 @@ if [ -z "${FPS_ONLY:-}" ]; then
   else echo "  디스플레이 ❌ /tmp/.X11-unix/X0 없음 — 모니터가 연결된 세션에서 실행할 것"; fail=1; fi
 fi
 
+if ! docker image inspect "$IMG" >/dev/null 2>&1; then
+  echo "  이미지  ❌ $IMG 없음 — 먼저 빌드:"
+  echo "          docker build -t marine-detect:jetson -f deploy/jetson/Dockerfile deploy/jetson"
+  fail=1
+else
+  echo "  이미지  OK ($IMG)"
+fi
+
 [ "$fail" = 0 ] || { echo "점검 실패 — 중단"; exit 1; }
 
 # ── 실행 ─────────────────────────────────────────────────────────────
@@ -57,7 +67,7 @@ if [ -n "${FPS_ONLY:-}" ]; then
   echo -e "\n=== 표시 없이 실행 (FPS 기준선) ===\n"
   exec docker run --rm --runtime nvidia --shm-size=2g --network host \
     --device /dev/video0 -v "$HOME/bundle:/bundle" -w /bundle/YOLO-pipeline "$IMG" \
-    bash -c "pip install -q lap >/dev/null 2>&1; python3 deploy/stream_infer.py $COMMON --limit 300 --no-snapshots"
+    python3 deploy/stream_infer.py $COMMON --limit 300 --no-snapshots
 fi
 
 echo -e "\n=== 모니터 표시로 실행 (창에서 q 로 종료) ===\n"
@@ -68,4 +78,4 @@ exec docker run --rm --runtime nvidia --shm-size=2g --network host \
   --device /dev/video0 \
   -e DISPLAY="${DISPLAY:-:0}" -v /tmp/.X11-unix:/tmp/.X11-unix \
   -v "$HOME/bundle:/bundle" -w /bundle/YOLO-pipeline "$IMG" \
-  bash -c "pip install -q lap >/dev/null 2>&1; python3 deploy/stream_infer.py $COMMON --show"
+  python3 deploy/stream_infer.py $COMMON --show
