@@ -61,7 +61,10 @@ if [ -n "${FPS_ONLY:-}" ]; then
 fi
 
 echo -e "\n=== 모니터 표시로 실행 (창에서 q 로 종료) ===\n"
-exec docker run --rm -it --runtime nvidia --shm-size=2g --network host \
+# -t 는 붙이지 않는다 — nohup/백그라운드로 띄우면 TTY 가 없어
+# "the input device is not a TTY" 로 죽는다. 표시에는 TTY 가 필요 없다(X11 소켓만 있으면 된다).
+# 창 종료는 q 키, 원격 종료는 docker stop.
+exec docker run --rm --runtime nvidia --shm-size=2g --network host \
   --device /dev/video0 \
   -e DISPLAY="${DISPLAY:-:0}" -v /tmp/.X11-unix:/tmp/.X11-unix \
   -v "$HOME/bundle:/bundle" -w /bundle/YOLO-pipeline "$IMG" \
