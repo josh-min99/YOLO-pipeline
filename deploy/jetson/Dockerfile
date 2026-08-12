@@ -17,8 +17,13 @@ FROM ultralytics/ultralytics:latest-jetson-jetpack6
 #    없으면 "Could not load the Qt platform plugin xcb" 로 죽는다 — 이름만 봐서는
 #    Qt/DISPLAY 문제로 보이지만 실체는 libICE.so.6 / libSM.so.6 부재다.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libice6 libsm6 libxext6 libxrender1 libxkbcommon-x11-0 \
+      libice6 libsm6 libxext6 libxrender1 libxkbcommon-x11-0 fonts-dejavu-core \
  && rm -rf /var/lib/apt/lists/*
+
+# 4. Qt 는 자체 폰트를 더 이상 배포하지 않아, cv2 가 기대하는 폰트 디렉터리가 비어 있다.
+#    치명적이진 않지만 **프레임마다** stderr 에 경고를 찍어 로그를 덮고 비용도 든다.
+RUN QF=$(python3 -c "import cv2, os; print(os.path.dirname(cv2.__file__))")/qt/fonts \
+ && mkdir -p "$QF" && cp /usr/share/fonts/truetype/dejavu/*.ttf "$QF"/
 
 # headless 를 먼저 지우지 않으면 두 패키지가 같은 cv2 를 놓고 충돌한다.
 RUN pip uninstall -y opencv-python-headless opencv-contrib-python-headless 2>/dev/null || true \
