@@ -283,7 +283,12 @@ def main():
 
                 # ── 구간 통계 (연속 부하 추이) ──────────────────────
                 now = time.time()
-                if args.stats_every and idx >= args.warmup and now - seg_t0 >= args.stats_every:
+                due = args.stats_every and idx >= args.warmup and now - seg_t0 >= args.stats_every
+                # 시간이 다 됐으면 마지막 구간을 반드시 남긴다. seg_t0 는 매번 '경계를 막
+                # 넘은 시각'으로 갱신되어 조금씩 밀리므로, 그냥 두면 마지막 구간이 종료
+                # 조건에 경합에서 져 통째로 사라진다(75초 리허설에서 5구간 중 4개만 남았다).
+                ending = args.duration and now - t_start >= args.duration
+                if (due or (ending and args.stats_every)) and len(lat) > seg_i0:
                     seg = np.array(lat[seg_i0:])
                     b = board_stats()
                     row = dict(
