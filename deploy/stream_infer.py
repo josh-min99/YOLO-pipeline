@@ -52,7 +52,9 @@ def board_stats():
     out = {}
     for name, p in _thermal_zones():
         try:
-            out[f"t_{name}"] = round(int(p.read_text()) / 1000.0, 1)
+            # 접두사는 반드시 "temp_" — "t_" 로 두면 경과시간 t_s 와 섞여
+            # 최대 온도가 1740°C 로 나온다(실제로 당했다).
+            out[f"temp_{name}"] = round(int(p.read_text()) / 1000.0, 1)
         except Exception:
             pass
     try:
@@ -304,7 +306,7 @@ def main():
                             seg_csv.write(",".join(row.keys()) + "\n")
                         seg_csv.write(",".join(str(v) for v in row.values()) + "\n")
                         seg_csv.flush()   # 중간에 죽어도 여기까지는 남는다
-                    temp = max([v for k, v in b.items() if k.startswith("t_")], default=None)
+                    temp = max([v for k, v in b.items() if k.startswith("temp_")], default=None)
                     print(f"  [{row['t_s']:7.1f}s] {row['fps']:5.2f} FPS  "
                           f"p50 {row['p50']:5.2f} / p95 {row['p95']:5.2f} ms  "
                           f"drop {row['drop_rate'] * 100:.1f}%  "
@@ -349,7 +351,7 @@ def main():
     if seg_rows:
         # 🔴 열스로틀 판정은 '처음 구간 대비 마지막 구간'으로 한다. 전체 평균은
         #    냉간 구간이 섞여 저하를 희석한다. 온도는 최댓값(가장 뜨거운 존)으로.
-        temps = [max([v for k, v in r.items() if k.startswith("t_")], default=None) for r in seg_rows]
+        temps = [max([v for k, v in r.items() if k.startswith("temp_")], default=None) for r in seg_rows]
         temps = [t for t in temps if t is not None]
         first, last = seg_rows[0], seg_rows[-1]
         rep["endurance"] = dict(
@@ -358,6 +360,7 @@ def main():
             fps_drop_pct=round((last["fps"] - first["fps"]) / first["fps"] * 100, 2),
             p95_first=first["p95"], p95_last=last["p95"],
             temp_start=(temps[0] if temps else None), temp_max=(max(temps) if temps else None),
+            temp_end=(temps[-1] if temps else None),
             gpu_mhz_min=min([r["gpu_mhz"] for r in seg_rows if "gpu_mhz" in r], default=None),
             gpu_mhz_max=max([r["gpu_mhz"] for r in seg_rows if "gpu_mhz" in r], default=None),
         )
