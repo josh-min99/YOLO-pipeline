@@ -295,6 +295,7 @@ def main():
                             # 현장 관측 기록 — 실패해도 실행은 절대 멈추지 않는다.
                             try:
                                 obs = dict(
+                                    session=logger.session,
                                     t=time.strftime("%Y-%m-%d %H:%M:%S"), frame=idx,
                                     key=chr(k), what=OBS_KEYS[k],
                                     alarm=bool(engine.alarm),
@@ -308,7 +309,8 @@ def main():
                                       f"  (경보 {'ON' if engine.alarm else 'off'}, "
                                       f"탐지 {len(dets)}건)", flush=True)
                                 if not args.no_snapshots:
-                                    cv2.imwrite(str(outdir / f"obs_{obs_n:04d}_{chr(k)}_f{idx}.jpg"), vis)
+                                    cv2.imwrite(str(outdir / f"{logger.session}_obs{obs_n:03d}_"
+                                                    f"{chr(k)}_f{idx}.jpg"), vis)
                             except Exception as e:
                                 print(f"  [관측 기록 실패] {e}", flush=True)
                 t2 = time.perf_counter()
