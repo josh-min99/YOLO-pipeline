@@ -28,6 +28,40 @@ from sources import open_source
 COLORS = {0: (0, 200, 0), 1: (0, 170, 255), 2: (0, 0, 255)}   # BGR: 어선/상선/군함
 
 
+# ── 보드 상태 읽기 ────────────────────────────────────────────────────
+# 연속 부하에서 "열스로틀이 있었나"는 끝 값 하나로는 알 수 없다 — 온도와 클럭이
+# 시간에 따라 어떻게 움직였는지를 봐야 한다. sysfs 는 컨테이너 안에서도 읽힌다.
+_THERMAL = None
+_GPU_FREQ = "/sys/devices/platform/17000000.gpu/devfreq_dev/cur_freq"
+
+
+def _thermal_zones():
+    global _THERMAL
+    if _THERMAL is None:
+        _THERMAL = []
+        for z in sorted(Path("/sys/devices/virtual/thermal").glob("thermal_zone*")):
+            try:
+                _THERMAL.append((z.joinpath("type").read_text().strip(), z / "temp"))
+            except Exception:
+                pass
+    return _THERMAL
+
+
+def board_stats():
+    """온도(°C)·GPU 클럭(MHz). 읽히지 않으면 그 항목만 빠진다(측정 실패를 0으로 채우지 않는다)."""
+    out = {}
+    for name, p in _thermal_zones():
+        try:
+            out[f"t_{name}"] = round(int(p.read_text()) / 1000.0, 1)
+        except Exception:
+            pass
+    try:
+        out["gpu_mhz"] = int(Path(_GPU_FREQ).read_text()) // 1000000
+    except Exception:
+        pass
+    return out
+
+
 def parse_imgsz(s):
     """'1280' → 1280,  '736,1280' → [736, 1280] (rect: 레터박스 패딩 제거)"""
     if "," in str(s):
@@ -121,6 +155,10 @@ def main():
     ap.add_argument("--m", type=int, default=10)
     ap.add_argument("--off-patience", type=int, default=15)
     ap.add_argument("--limit", type=int, default=0, help="처리 프레임 수 제한(0=전부)")
+    ap.add_argument("--duration", type=float, default=0,
+                    help="이 초 수만큼 돌고 정지(0=무제한). 연속 부하 시험용")
+    ap.add_argument("--stats-every", type=float, default=0,
+                    help="이 초마다 구간 통계(FPS·지연·온도·클럭)를 한 줄 찍고 CSV 에 남긴다")
     ap.add_argument("--warmup", type=int, default=3,
                     help="통계에서 제외할 초기 프레임 수(TRT 컨텍스트·의존성 자동설치로 첫 프레임이 수초 걸림)")
     ap.add_argument("--src-fps", type=float, default=8.0, help="dir: 소스의 가상 fps")
@@ -183,6 +221,12 @@ def main():
     t_infer, t_other, lat = [], [], []
     speeds = []
     t_start = time.time()
+    seg_rows, seg_t0, seg_i0 = [], t_start, 0
+    seg_csv = None
+    if args.stats_every:
+        seg_path = outdir / f"segments_{args.tag or 'run'}_{time.strftime('%H%M%S')}.csv"
+        seg_csv = open(seg_path, "w", encoding="utf-8")
+        print(f"[구간통계] {args.stats_every:.0f}초마다 → {seg_path}")
     idx = ts = 0
     try:
         with src:
@@ -235,6 +279,37 @@ def main():
                     speeds.append(sp)
                 if idx == args.warmup - 1:
                     t_start = time.time()   # FPS 계산 기준도 워밍업 직후로 리셋
+                    seg_t0, seg_i0 = t_start, 0
+
+                # ── 구간 통계 (연속 부하 추이) ──────────────────────
+                now = time.time()
+                if args.stats_every and idx >= args.warmup and now - seg_t0 >= args.stats_every:
+                    seg = np.array(lat[seg_i0:])
+                    b = board_stats()
+                    row = dict(
+                        t_s=round(now - t_start, 1), frames=len(lat),
+                        fps=round(len(seg) / (now - seg_t0), 2),
+                        p50=round(float(np.percentile(seg, 50)), 2),
+                        p95=round(float(np.percentile(seg, 95)), 2),
+                        drop_rate=round(float(src.stats.get("drop_rate", 0.0)), 4), **b,
+                    )
+                    seg_rows.append(row)
+                    if seg_csv is not None:
+                        if not seg_rows[:-1]:
+                            seg_csv.write(",".join(row.keys()) + "\n")
+                        seg_csv.write(",".join(str(v) for v in row.values()) + "\n")
+                        seg_csv.flush()   # 중간에 죽어도 여기까지는 남는다
+                    temp = max([v for k, v in b.items() if k.startswith("t_")], default=None)
+                    print(f"  [{row['t_s']:7.1f}s] {row['fps']:5.2f} FPS  "
+                          f"p50 {row['p50']:5.2f} / p95 {row['p95']:5.2f} ms  "
+                          f"drop {row['drop_rate'] * 100:.1f}%  "
+                          f"온도 {temp if temp is not None else '?'}°C  "
+                          f"GPU {b.get('gpu_mhz', '?')}MHz", flush=True)
+                    seg_t0, seg_i0 = now, len(lat)
+
+                if args.duration and now - t_start >= args.duration:
+                    print(f"\n지정한 {args.duration:.0f}초 경과 — 정지")
+                    break
     except KeyboardInterrupt:
         print("\n중단(Ctrl+C)")
     finally:
@@ -247,6 +322,8 @@ def main():
             web.close()
         if args.show:
             cv2.destroyAllWindows()
+        if seg_csv is not None:
+            seg_csv.close()
 
     elapsed = time.time() - t_start
     n = len(lat)
@@ -264,6 +341,21 @@ def main():
         model_speed_ms={k: round(float(np.mean([s[k] for s in speeds])), 2) for k in speeds[0]},
         source_stats=src.stats, alerts=engine.summary(),
     )
+    if seg_rows:
+        # 🔴 열스로틀 판정은 '처음 구간 대비 마지막 구간'으로 한다. 전체 평균은
+        #    냉간 구간이 섞여 저하를 희석한다. 온도는 최댓값(가장 뜨거운 존)으로.
+        temps = [max([v for k, v in r.items() if k.startswith("t_")], default=None) for r in seg_rows]
+        temps = [t for t in temps if t is not None]
+        first, last = seg_rows[0], seg_rows[-1]
+        rep["endurance"] = dict(
+            segments=len(seg_rows), segment_s=args.stats_every,
+            fps_first=first["fps"], fps_last=last["fps"],
+            fps_drop_pct=round((last["fps"] - first["fps"]) / first["fps"] * 100, 2),
+            p95_first=first["p95"], p95_last=last["p95"],
+            temp_start=(temps[0] if temps else None), temp_max=(max(temps) if temps else None),
+            gpu_mhz_min=min([r["gpu_mhz"] for r in seg_rows if "gpu_mhz" in r], default=None),
+            gpu_mhz_max=max([r["gpu_mhz"] for r in seg_rows if "gpu_mhz" in r], default=None),
+        )
     tag = args.tag or ("stub" if args.stub else Path(str(args.model)).stem)
     rp = outdir / f"report_{tag}_{time.strftime('%H%M%S')}.json"
     rp.write_text(json.dumps(rep, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -275,6 +367,13 @@ def main():
     print(f"모델 내부: {rep['model_speed_ms']}")
     print(f"입력: {src.stats}")
     print(f"경보: {engine.summary()}  → {logger.path}")
+    if "endurance" in rep:
+        e = rep["endurance"]
+        print(f"연속부하: {e['segments']}구간 × {e['segment_s']:.0f}s  "
+              f"FPS {e['fps_first']} → {e['fps_last']} ({e['fps_drop_pct']:+.2f}%)  "
+              f"p95 {e['p95_first']} → {e['p95_last']}ms  "
+              f"온도 {e['temp_start']} → 최대 {e['temp_max']}°C  "
+              f"GPU {e['gpu_mhz_min']}~{e['gpu_mhz_max']}MHz")
     print(f"리포트: {rp}")
     if src.is_live and src.stats.get("drop_rate", 0) > 0.05:
         print("⚠️ 입력 드롭 5% 초과 — 처리 속도가 입력 속도를 못 따라감(해상도/정밀도 조정 필요)")
