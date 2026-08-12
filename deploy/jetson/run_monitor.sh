@@ -105,4 +105,4 @@ exec docker run --rm --runtime nvidia --shm-size=2g --network host \
   --device /dev/video0 \
   -e DISPLAY="${DISPLAY:-:0}" -v /tmp/.X11-unix:/tmp/.X11-unix \
   -v "$HOME/bundle:/bundle" -w /bundle/YOLO-pipeline "$IMG" \
-  python3 deploy/stream_infer.py $COMMON --show
+  python3 deploy/stream_infer.py $COMMON --show --stats-every 60 $SAVE
