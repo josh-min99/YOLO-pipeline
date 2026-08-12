@@ -104,8 +104,20 @@ echo
 # -t 는 붙이지 않는다 — nohup/백그라운드로 띄우면 TTY 가 없어
 # "the input device is not a TTY" 로 죽는다. 표시에는 TTY 가 필요 없다(X11 소켓만 있으면 된다).
 # 창 종료는 q 키, 원격 종료는 docker stop.
-exec docker run --rm --runtime nvidia --shm-size=2g --network host \
+docker run --rm --runtime nvidia --shm-size=2g --network host \
   --device /dev/video0 \
   -e DISPLAY="${DISPLAY:-:0}" -v /tmp/.X11-unix:/tmp/.X11-unix \
   -v "$HOME/bundle:/bundle" -w /bundle/YOLO-pipeline "$IMG" \
   python3 deploy/stream_infer.py $COMMON --show --stats-every 60 $SAVE
+
+# 🔴 컨테이너가 root 로 쓰기 때문에 그냥 두면 산출물을 **복사조차 못 한다**(Permission denied).
+#    현장에서 증거를 못 들고 나오는 것이 가장 비싼 실패다. docker 자신이 root 이므로 sudo 없이 되돌린다.
+docker run --rm -v "$HOME/bundle:/bundle" "$IMG" \
+  chown -R "$(id -u):$(id -g)" "/bundle/YOLO-pipeline/$OUTDIR" 2>/dev/null \
+  && echo "산출물 소유권 정리 완료" || echo "⚠️  소유권 정리 실패 — 복사 시 sudo 필요할 수 있음"
+
+echo
+echo "=== 회수할 것 ==="
+ls -la "$OUTDIR" 2>/dev/null | tail -n +2
+echo
+echo "USB 로 복사: cp -r $OUTDIR /media/\$USER/<USB이름>/"
