@@ -27,6 +27,15 @@ from sources import open_source
 
 COLORS = {0: (0, 200, 0), 1: (0, 170, 255), 2: (0, 0, 255)}   # BGR: 어선/상선/군함
 
+# 현장 관측 키 — 라벨이 없는 실데모에서 '사람이 본 것'을 프레임 번호에 붙이는 유일한 수단.
+# 이게 있어야 데모가 "잘 되더라"에서 "군함 12척 중 11척 포착, 오경보 2회"로 바뀐다.
+OBS_KEYS = {
+    ord("w"): "군함 있음(육안)",
+    ord("s"): "선박 있음, 군함 아님(육안)",
+    ord("f"): "지금 경보는 오경보",
+    ord("x"): "지금 놓치고 있다(군함 보이는데 미탐)",
+}
+
 
 # ── 보드 상태 읽기 ────────────────────────────────────────────────────
 # 연속 부하에서 "열스로틀이 있었나"는 끝 값 하나로는 알 수 없다 — 온도와 클럭이
@@ -225,6 +234,14 @@ def main():
     t_start = time.time()
     seg_rows, seg_t0, seg_i0 = [], t_start, 0
     seg_csv = None
+    obs_n = 0
+    obs_f = open(outdir / "observations.jsonl", "a", encoding="utf-8")
+    if args.show:
+        print("[관측 기록] 창을 클릭한 뒤 키를 누르면 그 순간이 기록된다 "
+              f"→ {outdir / 'observations.jsonl'}")
+        for k, v in OBS_KEYS.items():
+            print(f"    {chr(k)} : {v}")
+        print("    q : 종료")
     if args.stats_every:
         seg_path = outdir / f"segments_{args.tag or 'run'}_{time.strftime('%H%M%S')}.csv"
         seg_csv = open(seg_path, "w", encoding="utf-8")
@@ -271,8 +288,29 @@ def main():
                         writer.write(vis)
                     if args.show:
                         cv2.imshow("marine-detect", vis)
-                        if cv2.waitKey(1) & 0xFF == ord("q"):
+                        k = cv2.waitKey(1) & 0xFF
+                        if k == ord("q"):
                             break
+                        elif k in OBS_KEYS:
+                            # 현장 관측 기록 — 실패해도 실행은 절대 멈추지 않는다.
+                            try:
+                                obs = dict(
+                                    t=time.strftime("%Y-%m-%d %H:%M:%S"), frame=idx,
+                                    key=chr(k), what=OBS_KEYS[k],
+                                    alarm=bool(engine.alarm),
+                                    dets=[dict(cls=int(d["cls"]), conf=round(float(d["conf"]), 3))
+                                          for d in dets],
+                                )
+                                obs_f.write(json.dumps(obs, ensure_ascii=False) + "\n")
+                                obs_f.flush()
+                                obs_n += 1
+                                print(f"  [관측 {obs_n}] f{idx} {OBS_KEYS[k]}"
+                                      f"  (경보 {'ON' if engine.alarm else 'off'}, "
+                                      f"탐지 {len(dets)}건)", flush=True)
+                                if not args.no_snapshots:
+                                    cv2.imwrite(str(outdir / f"obs_{obs_n:04d}_{chr(k)}_f{idx}.jpg"), vis)
+                            except Exception as e:
+                                print(f"  [관측 기록 실패] {e}", flush=True)
                 t2 = time.perf_counter()
                 if idx >= args.warmup:      # 워밍업 프레임은 통계에서 제외(평균이 통째로 오염됨)
                     t_infer.append((t1 - t0) * 1e3)
@@ -331,6 +369,7 @@ def main():
             cv2.destroyAllWindows()
         if seg_csv is not None:
             seg_csv.close()
+        obs_f.close()
 
     elapsed = time.time() - t_start
     n = len(lat)
@@ -375,6 +414,8 @@ def main():
     print(f"모델 내부: {rep['model_speed_ms']}")
     print(f"입력: {src.stats}")
     print(f"경보: {engine.summary()}  → {logger.path}")
+    if obs_n:
+        print(f"현장 관측: {obs_n}건 → {outdir / 'observations.jsonl'}")
     if "endurance" in rep:
         e = rep["endurance"]
         print(f"연속부하: {e['segments']}구간 × {e['segment_s']:.0f}s  "
